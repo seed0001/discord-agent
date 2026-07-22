@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1e1f22">
+  <title>Discord Agent</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- Login -->
+  <div id="login-screen" class="hidden">
+    <div class="login-card">
+      <h1>Discord Agent</h1>
+      <p class="muted">Enter the dashboard password</p>
+      <form id="login-form">
+        <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" required>
+        <button type="submit" class="btn primary full">Log in</button>
+      </form>
+      <p id="login-error" class="error hidden">Wrong password</p>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <header>
+      <select id="guild-select" aria-label="Server"></select>
+      <button id="logout-btn" class="btn ghost" title="Log out">&#x23FB;</button>
+    </header>
+
+    <main id="content"></main>
+
+    <nav id="tabbar">
+      <button data-tab="overview" class="active"><span>&#x1F4CA;</span>Overview</button>
+      <button data-tab="members"><span>&#x1F465;</span>Members</button>
+      <button data-tab="server"><span>&#x1F3E0;</span>Server</button>
+      <button data-tab="mod"><span>&#x1F6E1;</span>Mod</button>
+      <button data-tab="settings"><span>&#x2699;</span>Settings</button>
+    </nav>
+  </div>
+
+  <!-- Modal -->
+  <div id="modal-backdrop" class="hidden">
+    <div id="modal"></div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
