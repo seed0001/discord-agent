@@ -12,16 +12,29 @@ from discord.ext import commands
 
 import db
 import openrouter
+import tools
 
 log = logging.getLogger("ai")
 
 HISTORY_LEN = 20  # messages of context kept per channel
+MAX_AUTO_REPOS = 2  # GitHub links auto-analyzed per message
 
 FEATURES = (
     "Beyond slash commands, you also handle: automod (banned words, invite "
     "blocking, mention spam), welcome/goodbye messages with an optional "
     "autorole, moderation logging, and a mobile web dashboard where admins "
     "configure all of this (including your AI settings and this very persona)."
+)
+
+ABILITIES = (
+    "You can look things up: you have a web_search tool (DuckDuckGo) for "
+    "current events, docs, or anything you're unsure about, and a github_repo "
+    "tool that pulls a repository's description, stats, languages, and README. "
+    "When someone shares a GitHub link, the repo's details are attached to "
+    "their message automatically — dig in and actually work with them on it: "
+    "what it does, the stack, how it's structured, what's cool, what could be "
+    "better, ideas for where to take it. Use tools when they'd help; don't "
+    "guess at things you can check."
 )
 
 
@@ -46,6 +59,7 @@ class AI(commands.Cog):
             "Server members interact with you by mentioning you or using your slash commands:\n"
             f"{command_lines}\n"
             f"{FEATURES}\n"
+            f"{ABILITIES}\n"
             "You can't invoke commands yourself from chat, so when someone asks you to "
             "do something (kick, ban, make a channel, etc.), point them to the right "
             "slash command instead of pretending you did it."
@@ -58,10 +72,20 @@ class AI(commands.Cog):
         channel_history = self.history[message.channel.id]
 
         content = message.content.replace(self.bot.user.mention, "").strip() or "(no text)"
+
+        # Auto-attach repo details when the message contains GitHub links, so
+        # the bot can analyze them (and follow-ups keep the context in history).
+        for owner, name in tools.find_repo_refs(content)[:MAX_AUTO_REPOS]:
+            info = await tools.run_tool("github_repo", {"repo": f"{owner}/{name}"})
+            content += f"\n\n[attached context for github.com/{owner}/{name}]\n{info}"
+
         channel_history.append({"role": "user", "content": f"{message.author.display_name}: {content}"})
 
         messages = [{"role": "system", "content": system_prompt}, *channel_history]
-        reply = await openrouter.chat(messages, model=model)
+        reply = await openrouter.chat(
+            messages, model=model,
+            tools=tools.TOOL_SCHEMAS, tool_handler=tools.run_tool,
+        )
         channel_history.append({"role": "assistant", "content": reply})
         return reply
 
@@ -102,6 +126,7 @@ class AI(commands.Cog):
                 [{"role": "system", "content": system_prompt},
                  {"role": "user", "content": question}],
                 model=model,
+                tools=tools.TOOL_SCHEMAS, tool_handler=tools.run_tool,
             )
         except openrouter.OpenRouterError as exc:
             log.warning("OpenRouter error: %s", exc)
