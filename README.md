@@ -50,6 +50,7 @@ Create a key at [openrouter.ai/keys](https://openrouter.ai/keys) — this is `OP
    | Variable | Value |
    |---|---|
    | `DISCORD_TOKEN` | your bot token |
+   | `OWNER_ID` | your Discord user ID (management commands are owner-only) |
    | `OPENROUTER_API_KEY` | your OpenRouter key |
    | `DASHBOARD_PASSWORD` | password for the dashboard |
    | `SECRET_KEY` | any long random string |
@@ -86,3 +87,6 @@ Dashboard: http://localhost:8000
   dashboard. Any [OpenRouter model ID](https://openrouter.ai/models) works.
 - The dashboard is a single password for full control — use a strong one, and keep the
   Railway domain private.
+- Management commands (moderation, roles, channels, welcome, `/say`) only work for the
+  user whose ID is in `OWNER_ID`. AI chat (`/ask`, @mentions) and info commands
+  (`/ping`, `/serverinfo`, `/userinfo`) are open to everyone.

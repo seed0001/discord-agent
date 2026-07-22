@@ -3,12 +3,17 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from bot.utils import log_action
+from bot.utils import is_owner, log_action
 
 
 class Roles(commands.Cog):
+    """All commands in this cog are restricted to the bot owner (OWNER_ID)."""
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return is_owner(interaction.user.id)
 
     @app_commands.command(description="Give a role to a member")
     @app_commands.describe(member="Member to give the role to", role="Role to give")

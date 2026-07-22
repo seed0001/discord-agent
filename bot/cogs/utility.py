@@ -3,6 +3,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from bot.utils import owner_only
+
 
 class Utility(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -44,6 +46,7 @@ class Utility(commands.Cog):
     @app_commands.describe(message="What the bot should say",
                            channel="Channel to send to (defaults to current)")
     @app_commands.default_permissions(manage_messages=True)
+    @owner_only()
     async def say(self, interaction: discord.Interaction, message: str,
                   channel: discord.TextChannel | None = None):
         target = channel or interaction.channel

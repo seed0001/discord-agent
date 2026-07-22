@@ -19,6 +19,8 @@ log = logging.getLogger("main")
 async def main():
     if not config.DISCORD_TOKEN:
         raise SystemExit("DISCORD_TOKEN environment variable is required.")
+    if not config.OWNER_ID:
+        log.warning("OWNER_ID is not set — owner-only management commands will deny everyone.")
     if not config.DASHBOARD_PASSWORD:
         log.warning("DASHBOARD_PASSWORD is not set — dashboard login is disabled.")
     if not config.SECRET_KEY:

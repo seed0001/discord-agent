@@ -4,12 +4,16 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
-from bot.utils import format_template
+from bot.utils import format_template, is_owner
 
 
 class Welcome(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Commands (not listeners) in this cog are owner-only.
+        return is_owner(interaction.user.id)
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):

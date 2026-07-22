@@ -83,6 +83,8 @@ class DiscordAgent(commands.Bot):
         message = "Something went wrong running that command."
         if isinstance(error, discord.app_commands.MissingPermissions):
             message = "You don't have permission to use that command."
+        elif isinstance(error, discord.app_commands.CheckFailure):
+            message = "Only the bot owner can use this command."
         elif isinstance(error, discord.app_commands.CommandInvokeError):
             original = error.original
             if isinstance(original, discord.Forbidden):

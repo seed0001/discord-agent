@@ -1,7 +1,21 @@
 """Shared helpers for the bot."""
 import discord
+from discord import app_commands
 
+import config
 import db
+
+
+def is_owner(user_id: int) -> bool:
+    """True if user_id is the configured bot owner (OWNER_ID env var)."""
+    return bool(config.OWNER_ID) and user_id == config.OWNER_ID
+
+
+def owner_only():
+    """App-command check restricting a command to the bot owner."""
+    def predicate(interaction: discord.Interaction) -> bool:
+        return is_owner(interaction.user.id)
+    return app_commands.check(predicate)
 
 ACTION_COLORS = {
     "kick": 0xF0B232,
