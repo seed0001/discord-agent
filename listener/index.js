@@ -273,13 +273,22 @@ const control = http.createServer((req, res) => {
 
 // -- wiring -----------------------------------------------------------------
 
-client.once(Events.ClientReady, async () => {
-  console.log(`[listener] logged in as ${client.user.tag}, DAVE-capable voice listener up`);
-  control.listen(SIDECAR_PORT, '127.0.0.1', () =>
-    console.log(`[listener] control API on 127.0.0.1:${SIDECAR_PORT}`));
+async function rebalanceAll() {
   for (const guild of client.guilds.cache.values()) {
     await rebalance(guild).catch((err) => console.error('[listener] rebalance:', err.message));
   }
+}
+
+client.once(Events.ClientReady, () => {
+  console.log(`[listener] logged in as ${client.user.tag}, DAVE-capable voice listener up`);
+  control.listen(SIDECAR_PORT, '127.0.0.1', () =>
+    console.log(`[listener] control API on 127.0.0.1:${SIDECAR_PORT}`));
+  // The python bot may still be loading cogs when we come up, so the first
+  // config fetches can fail — sweep again shortly, then periodically as a
+  // catch-all (also picks up voice_enabled toggles and missed events).
+  rebalanceAll();
+  for (const delay of [5_000, 15_000]) setTimeout(rebalanceAll, delay);
+  setInterval(rebalanceAll, 30_000);
 });
 
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
