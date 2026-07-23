@@ -37,8 +37,25 @@ CREATE TABLE IF NOT EXISTS mod_logs (
     reason     TEXT,
     created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS memory (
+    guild_id   INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, kind)
+);
+CREATE TABLE IF NOT EXISTS memory_versions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    content    TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_warnings_guild_user ON warnings (guild_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_logs_guild ON mod_logs (guild_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_memver ON memory_versions (guild_id, kind, version);
 """
 
 DEFAULTS = {
@@ -122,6 +139,52 @@ async def set_setting(guild_id: int, key: str, value) -> None:
         "ON CONFLICT (guild_id, key) DO UPDATE SET value = excluded.value",
         (guild_id, key, json.dumps(value)),
     )
+    await _db.commit()
+
+
+# -- AI memory --------------------------------------------------------------
+
+MEMORY_VERSIONS_KEPT = 10
+
+
+async def get_memory(guild_id: int, kind: str) -> tuple[str, int]:
+    """Return (content, version) for a memory file; ("", 0) if none yet."""
+    cur = await _db.execute(
+        "SELECT content, version FROM memory WHERE guild_id = ? AND kind = ?",
+        (guild_id, kind),
+    )
+    row = await cur.fetchone()
+    return (row["content"], row["version"]) if row else ("", 0)
+
+
+async def set_memory(guild_id: int, kind: str, content: str) -> int:
+    """Atomically replace a memory file, archiving the previous version."""
+    now = int(time.time())
+    _, version = await get_memory(guild_id, kind)
+    new_version = version + 1
+    await _db.execute(
+        "INSERT INTO memory (guild_id, kind, content, version, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT (guild_id, kind) DO UPDATE SET "
+        "content = excluded.content, version = excluded.version, updated_at = excluded.updated_at",
+        (guild_id, kind, content, new_version, now),
+    )
+    await _db.execute(
+        "INSERT INTO memory_versions (guild_id, kind, version, content, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (guild_id, kind, new_version, content, now),
+    )
+    await _db.execute(
+        "DELETE FROM memory_versions WHERE guild_id = ? AND kind = ? AND version <= ?",
+        (guild_id, kind, new_version - MEMORY_VERSIONS_KEPT),
+    )
+    await _db.commit()
+    return new_version
+
+
+async def clear_memory(guild_id: int) -> None:
+    await _db.execute("DELETE FROM memory WHERE guild_id = ?", (guild_id,))
+    await _db.execute("DELETE FROM memory_versions WHERE guild_id = ?", (guild_id,))
     await _db.commit()
 
 
