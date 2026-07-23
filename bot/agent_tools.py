@@ -288,6 +288,8 @@ async def _create_channel(bot, message, args):
         channel = await guild.create_voice_channel(name, category=category)
     elif kind == "category":
         channel = await guild.create_category(name)
+    elif kind == "forum":
+        channel = await guild.create_forum(name, category=category)
     else:
         kind = "text"
         channel = await guild.create_text_channel(name, category=category)
@@ -421,9 +423,9 @@ TOOLS: dict[str, tuple[dict, callable]] = {
         {"locked": {"type": "boolean", "description": "true to lock, false to unlock (default true)"},
          "channel": _CHANNEL_OPT}), _lock_channel),
     "create_channel": (_schema(
-        "create_channel", "Create a text, voice, or category channel.",
+        "create_channel", "Create a text, voice, category, or forum channel.",
         {"name": _str("Name for the new channel"),
-         "kind": {"type": "string", "enum": ["text", "voice", "category"],
+         "kind": {"type": "string", "enum": ["text", "voice", "category", "forum"],
                   "description": "Channel type (default text)"},
          "category": _str("Category to place the channel in (optional)")}, ["name"]),
         _create_channel),
