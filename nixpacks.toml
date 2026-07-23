@@ -1,5 +1,6 @@
-# Extra system packages for voice support:
-# libopus — decoding incoming voice streams (discord-ext-voice-recv)
-# ffmpeg  — playing TTS audio back into the channel
+# Extra system packages for voice support, installed via apt so the libraries
+# land in standard paths where ctypes can find them:
+# libopus0 — decoding incoming voice streams (discord-ext-voice-recv)
+# ffmpeg   — playing TTS audio back into the channel
 [phases.setup]
-nixPkgs = ["...", "ffmpeg", "libopus"]
+aptPkgs = ["ffmpeg", "libopus0"]

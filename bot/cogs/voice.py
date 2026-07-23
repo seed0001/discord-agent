@@ -37,6 +37,40 @@ from bot.utils import is_owner, log_action, owner_only
 
 log = logging.getLogger("voice")
 
+
+def _ensure_opus() -> bool:
+    """Load libopus for voice decode, searching beyond ctypes' default paths
+    (nix store, common lib dirs) since managed builds put it in odd places."""
+    if discord.opus.is_loaded():
+        return True
+    try:
+        discord.opus._load_default()
+    except Exception:
+        pass
+    if discord.opus.is_loaded():
+        return True
+    import ctypes.util
+    import glob
+
+    candidates = []
+    found = ctypes.util.find_library("opus")
+    if found:
+        candidates.append(found)
+    for pattern in (
+        "/usr/lib/x86_64-linux-gnu/libopus.so*",
+        "/usr/lib/**/libopus.so*",
+        "/nix/store/*opus*/lib/libopus.so*",
+    ):
+        candidates.extend(sorted(glob.glob(pattern, recursive=True)))
+    for path in candidates:
+        try:
+            discord.opus.load_opus(path)
+            log.info("Loaded opus from %s", path)
+            return True
+        except Exception:
+            continue
+    return False
+
 PCM_BYTES_PER_SEC = 48000 * 2 * 2  # 48kHz, 16-bit, stereo
 SILENCE_FLUSH = 1.0       # seconds of silence that ends an utterance
 MIN_UTTERANCE_SEC = 0.4   # drop blips shorter than this
@@ -74,7 +108,8 @@ class Voice(commands.Cog):
             log.warning("TRANSCRIPTION_API_KEY not set — voice monitoring disabled")
 
     def enabled(self) -> bool:
-        return voice_recv is not None and transcription.available()
+        return (voice_recv is not None and transcription.available()
+                and discord.opus.is_loaded())
 
     async def cog_load(self):
         self.flusher = asyncio.create_task(self._flush_loop())
@@ -313,4 +348,7 @@ class Voice(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
+    if voice_recv is not None and not _ensure_opus():
+        log.error("libopus not found — voice monitoring disabled "
+                  "(install libopus0 / add it to nixpacks.toml)")
     await bot.add_cog(Voice(bot))
