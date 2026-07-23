@@ -60,6 +60,19 @@ FISH_TAG_PROMPT = (
     "(chuckling) but the tabs-vs-spaces thing died in 2015.\""
 )
 
+FISH_S2_TAG_PROMPT = (
+    "\nYour reply is spoken aloud through a voice engine (Fish Audio S2) that "
+    "takes free-form voice directions in [square brackets], placed exactly "
+    "where the delivery should shift — start, mid-sentence, wherever. Any "
+    "natural description works: [relaxed] [excited] [whispering] [deadpan] "
+    "[slows down, thoughtful] [laughing nervously]. It also does paralanguage "
+    "sounds in parentheses: (laugh) (sigh) (breath) (break) (long-break). "
+    "Use a few per reply, matching your chill persona and the moment. "
+    "Example: \"[relaxed] honestly dude, both of you have a point. (laugh) "
+    "[deadpan] but the tabs-vs-spaces war died in 2015. [soft, sincere] "
+    "ship the thing, that's what matters.\""
+)
+
 
 class Voice(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -162,7 +175,7 @@ class Voice(commands.Cog):
             channel=channel.name, speaker=speaker_name
         )
         if tts.fish_enabled():
-            system_prompt += FISH_TAG_PROMPT
+            system_prompt += FISH_S2_TAG_PROMPT if tts.is_s2() else FISH_TAG_PROMPT
         lines = [e for e in self.transcripts[channel.id] if not e.get("system")][-CONTEXT_LINES:]
         transcript = "\n".join(f"{e['name']}: {e['text']}" for e in lines)
         model = await db.get_setting(guild.id, "ai_model")
