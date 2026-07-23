@@ -1,4 +1,7 @@
 """Utility slash commands."""
+import asyncio
+import os
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -14,6 +17,14 @@ class Utility(commands.Cog):
     async def ping(self, interaction: discord.Interaction):
         await interaction.response.send_message(
             f"Pong! `{round(self.bot.latency * 1000)}ms`", ephemeral=True)
+
+    @app_commands.command(description="Restart the bot (full process restart)")
+    @owner_only()
+    async def restart(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "Restarting — back in ~30s.", ephemeral=True)
+        # Non-zero exit makes the platform's restart policy bring us back up
+        asyncio.get_running_loop().call_later(1, os._exit, 1)
 
     @app_commands.command(description="Show info about this server")
     async def serverinfo(self, interaction: discord.Interaction):
