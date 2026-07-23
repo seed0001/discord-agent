@@ -26,6 +26,7 @@ ACTION_COLORS = {
     "warn": 0xF0B232,
     "purge": 0x5865F2,
     "automod": 0xDA373C,
+    "voice_flag": 0xDA373C,
 }
 
 

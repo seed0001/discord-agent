@@ -15,6 +15,11 @@ as a single service (bot + dashboard in one process).
 - AI: `/ask`, `/aireset`, and the bot replies whenever it's @mentioned
 - AI tools: DuckDuckGo web search, plus GitHub repo analysis (share a repo
   link and the bot pulls its stats, languages, and README to discuss it)
+- Voice monitoring: the bot joins occupied voice channels, transcribes each
+  speaker separately, flags banned words to the mod log, and joins the
+  conversation (text + TTS) when someone says a wake word — `/voicejoin`
+  `/voiceleave` `/wakewords` (needs `TRANSCRIPTION_API_KEY`; announces
+  itself in the channel when it starts listening)
 - Welcome/goodbye messages + autorole for new members
 - Automod: banned words, invite-link blocking, mention-spam limits
 - Mod log channel + persistent action history
@@ -58,6 +63,7 @@ Create a key at [openrouter.ai/keys](https://openrouter.ai/keys) — this is `OP
    | `SECRET_KEY` | any long random string |
    | `DATABASE_PATH` | `/data/bot.db` |
    | `GITHUB_TOKEN` | *(optional)* GitHub token — raises the repo-analysis API rate limit |
+   | `TRANSCRIPTION_API_KEY` | *(optional)* OpenAI or Groq key — enables voice monitoring |
 
 4. Attach a **Volume** to the service mounted at `/data` (so settings/warnings survive
    redeploys).
