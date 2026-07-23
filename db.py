@@ -66,9 +66,8 @@ DEFAULTS = {
         "walls of text, no lectures."
     ),
     "ai_channels": [],
-    # voice monitoring — off by default: Discord's DAVE/E2EE enforcement
-    # (Mar 2026) breaks python voice receive until libraries add DAVE support
-    "voice_enabled": False,
+    # voice monitoring (audio capture via the Node.js sidecar in listener/)
+    "voice_enabled": True,
     "voice_wake_words": ["hey max", "hey andrew"],
     # global presence (guild_id 0)
     "presence_status": "online",

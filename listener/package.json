@@ -1,0 +1,21 @@
+{
+  "name": "discord-agent-listener",
+  "private": true,
+  "description": "Voice listener sidecar: joins voice channels with DAVE E2EE support, receives per-user audio, and posts utterances to the Python bot.",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@discordjs/opus": "^0.10.0",
+    "@discordjs/voice": "^0.19.2",
+    "@snazzah/davey": "^0.1.12",
+    "discord.js": "^14.27.0",
+    "opusscript": "^0.0.8",
+    "prism-media": "^1.3.5",
+    "sodium-native": "^5.1.0"
+  }
+}
