@@ -271,6 +271,15 @@ async def channels(guild_id: str, request: Request):
     return [serialize_channel(c) for c in ordered]
 
 
+@protected.get("/guilds/{guild_id}/transcripts")
+async def get_transcripts(guild_id: str, request: Request):
+    g = get_guild(request, guild_id)
+    cog = get_bot(request).get_cog("Voice")
+    if cog is None:
+        return {"channels": [], "listening": None, "enabled": False}
+    return await cog.dashboard_data(g)
+
+
 class ChannelCreateBody(BaseModel):
     name: str
     type: str = "text"  # text | voice | category | forum

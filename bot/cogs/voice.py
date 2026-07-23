@@ -51,7 +51,7 @@ VOICE_PROMPT = (
 class Voice(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # channel_id -> deque[(speaker_name, text)]
+        # channel_id -> deque[{ts, name, text, bot?, flagged?, system?}]
         self.transcripts: dict[int, deque] = defaultdict(lambda: deque(maxlen=TRANSCRIPT_LINES))
         self.last_wake: dict[int, float] = {}
         self.stt_sem = asyncio.Semaphore(MAX_CONCURRENT_STT)
@@ -73,7 +73,10 @@ class Voice(commands.Cog):
 
     async def handle_event(self, guild_id: int, channel_id: int, event: str):
         if event == "left":
-            self.transcripts.pop(channel_id, None)
+            # keep the transcript for dashboard review; just mark the boundary
+            if self.transcripts.get(channel_id):
+                self.transcripts[channel_id].append(
+                    {"ts": time.time(), "name": "", "text": "— left the channel —", "system": True})
             return
         if event != "joined":
             return
@@ -107,9 +110,9 @@ class Voice(commands.Cog):
         if not text:
             return {}
         log.info("[%s] %s: %s", channel.name, name, text)
-        self.transcripts[channel_id].append((name, text))
-
-        await self._check_banned_words(guild, channel, name, text)
+        flagged = await self._check_banned_words(guild, channel, name, text)
+        self.transcripts[channel_id].append(
+            {"ts": time.time(), "name": name, "text": text, "flagged": flagged})
 
         tts = None
         wake = await self._wake_words(guild_id)
@@ -118,7 +121,7 @@ class Voice(commands.Cog):
             tts = await self._respond(channel, name)
         return {"text": text, "tts": tts}
 
-    async def _check_banned_words(self, guild, channel, speaker_name, text):
+    async def _check_banned_words(self, guild, channel, speaker_name, text) -> bool:
         banned = await db.get_setting(guild.id, "banned_words") or []
         lowered = text.lower()
         hits = [w for w in banned if w.lower() in lowered]
@@ -128,6 +131,7 @@ class Voice(commands.Cog):
                 f"{speaker_name} in #{channel.name}",
                 f"said {', '.join(hits)!r}: “{text[:180]}”",
             )
+        return bool(hits)
 
     # -- wake-word response ---------------------------------------------------
 
@@ -144,8 +148,8 @@ class Voice(commands.Cog):
         system_prompt = base_prompt + VOICE_PROMPT.format(
             channel=channel.name, speaker=speaker_name
         )
-        lines = list(self.transcripts[channel.id])[-CONTEXT_LINES:]
-        transcript = "\n".join(f"{n}: {t}" for n, t in lines)
+        lines = [e for e in self.transcripts[channel.id] if not e.get("system")][-CONTEXT_LINES:]
+        transcript = "\n".join(f"{e['name']}: {e['text']}" for e in lines)
         model = await db.get_setting(guild.id, "ai_model")
         try:
             reply = await openrouter.chat(
@@ -159,7 +163,8 @@ class Voice(commands.Cog):
             return None
         if not reply:
             return None
-        self.transcripts[channel.id].append((self.bot.user.display_name, reply))
+        self.transcripts[channel.id].append(
+            {"ts": time.time(), "name": self.bot.user.display_name, "text": reply, "bot": True})
         try:
             for chunk in [reply[i:i + 1990] for i in range(0, len(reply), 1990)]:
                 await channel.send(chunk)
@@ -180,6 +185,33 @@ class Voice(commands.Cog):
         except Exception as exc:
             log.info("TTS unavailable (%s) — text reply only", exc)
             return None
+
+    # -- dashboard data --------------------------------------------------------
+
+    async def dashboard_data(self, guild: discord.Guild) -> dict:
+        """Transcript console data for the web dashboard."""
+        listening = None
+        try:
+            status = await self._sidecar("GET", "/status")
+            for conn in status.get("connections", []):
+                if str(conn.get("guild")) == str(guild.id):
+                    listening = str(conn.get("channel"))
+        except (httpx.HTTPError, ValueError):
+            pass
+        channels = []
+        for channel_id, lines in self.transcripts.items():
+            channel = guild.get_channel(channel_id)
+            if channel is None or not lines:
+                continue
+            channels.append({
+                "id": str(channel_id),
+                "name": channel.name,
+                "live": str(channel_id) == listening,
+                "lines": list(lines),
+            })
+        channels.sort(key=lambda c: c["lines"][-1]["ts"], reverse=True)
+        return {"channels": channels, "listening": listening,
+                "enabled": transcription.available()}
 
     # -- owner commands (proxied to the sidecar's control API) ----------------
 
