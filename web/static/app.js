@@ -155,10 +155,12 @@ document.querySelectorAll("#tabbar button").forEach((btn) => {
 });
 
 function render() {
+  clearInterval(state.voiceTimer); // stop console polling when leaving the tab
   const renderers = {
     overview: renderOverview,
     members: renderMembers,
     server: renderServer,
+    voice: renderVoice,
     mod: renderMod,
     settings: renderSettings,
   };
@@ -421,6 +423,79 @@ async function renderServer() {
         renderServer();
       });
   });
+}
+
+/* ---------- voice console ---------- */
+
+async function renderVoice() {
+  content().innerHTML = `
+    <div class="section-title" style="display:flex;align-items:center;gap:8px">
+      Voice console <span id="voice-live" class="badge hidden"></span>
+    </div>
+    <div class="inline-form">
+      <select id="voice-channel"></select>
+      <label class="muted" style="display:flex;align-items:center;gap:6px;font-size:13px">
+        <input type="checkbox" id="voice-follow" checked> follow
+      </label>
+    </div>
+    <div id="voice-console" class="console"><div class="muted" style="padding:8px">Loading…</div></div>`;
+  $("#voice-channel").addEventListener("change", (e) => {
+    state.voiceChannel = e.target.value;
+    refreshVoice(true).catch(() => {});
+  });
+  await refreshVoice(true);
+  state.voiceTimer = setInterval(() => refreshVoice(false).catch(() => {}), 3000);
+}
+
+function consoleLine(l) {
+  const t = new Date(l.ts * 1000).toLocaleTimeString([], { hour12: false });
+  if (l.system) return `<div class="console-line system"><span class="t">${t}</span> ${esc(l.text)}</div>`;
+  const cls = l.bot ? "console-line bot" : l.flagged ? "console-line flagged" : "console-line";
+  return `<div class="${cls}"><span class="t">${t}</span> <span class="who">${esc(l.name)}:</span> ${esc(l.text)}${l.flagged ? ' <span class="badge danger">flagged</span>' : ""}</div>`;
+}
+
+async function refreshVoice(force) {
+  const box = $("#voice-console");
+  if (!box) return; // tab changed mid-flight
+  const data = await api(`/guilds/${state.guildId}/transcripts`);
+
+  const live = $("#voice-live");
+  live.classList.remove("hidden");
+  if (!data.enabled) {
+    live.textContent = "transcription off";
+    live.className = "badge";
+  } else if (data.listening) {
+    live.textContent = "listening";
+    live.className = "badge ok";
+  } else {
+    live.textContent = "idle";
+    live.className = "badge";
+  }
+
+  const select = $("#voice-channel");
+  const options = data.channels
+    .map((c) => `<option value="${c.id}">${esc("#" + c.name)}${c.live ? " · live" : ""}</option>`)
+    .join("");
+  if (select.innerHTML !== options) {
+    select.innerHTML = options;
+  }
+  if (!data.channels.length) {
+    box.innerHTML = `<div class="muted" style="padding:8px">No transcripts yet — lines appear here in real time as people talk in voice.</div>`;
+    return;
+  }
+  if (!data.channels.some((c) => c.id === state.voiceChannel)) {
+    state.voiceChannel = (data.channels.find((c) => c.live) || data.channels[0]).id;
+  }
+  select.value = state.voiceChannel;
+
+  const chan = data.channels.find((c) => c.id === state.voiceChannel);
+  const html = chan.lines.map(consoleLine).join("");
+  if (box._html !== html) {
+    const follow = $("#voice-follow").checked;
+    box.innerHTML = html;
+    box._html = html;
+    if (force || follow) box.scrollTop = box.scrollHeight;
+  }
 }
 
 /* ---------- moderation ---------- */
