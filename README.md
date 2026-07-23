@@ -15,6 +15,11 @@ as a single service (bot + dashboard in one process).
 - AI: `/ask`, `/aireset`, and the bot replies whenever it's @mentioned
 - AI tools: DuckDuckGo web search, plus GitHub repo analysis (share a repo
   link and the bot pulls its stats, languages, and README to discuss it)
+- Persistent two-tier memory: a working-memory file (current topic, open
+  questions, recent meaningful turns; refreshed every 5 turns) rolls into a
+  durable-memory file (dated facts/preferences/decisions with confidence)
+  every ~45 turns — fed by text chat and voice alike, stored versioned in
+  SQLite, injected into every reply; `/memory` shows or wipes it (owner)
 - Voice monitoring (hybrid): a Node.js sidecar (`listener/`) joins occupied
   voice channels — it speaks Discord's DAVE E2EE voice protocol via
   discord.js, which Python libraries don't support yet — receives each

@@ -25,6 +25,7 @@ from discord.ext import commands
 
 import config
 import db
+import memory
 import openrouter
 import tools
 import transcription
@@ -139,6 +140,7 @@ class Voice(commands.Cog):
         flagged = await self._check_banned_words(guild, channel, name, text)
         self.transcripts[channel_id].append(
             {"ts": time.time(), "name": name, "text": text, "flagged": flagged})
+        memory.record_turn(guild_id, name, text, "voice")
 
         tts = None
         wake = await self._wake_words(guild_id)
@@ -195,6 +197,7 @@ class Voice(commands.Cog):
         display = tts.strip_voice_tags(reply) or reply
         self.transcripts[channel.id].append(
             {"ts": time.time(), "name": self.bot.user.display_name, "text": display, "bot": True})
+        memory.record_turn(channel.guild.id, self.bot.user.display_name, display, "voice")
         try:
             for chunk in [display[i:i + 1990] for i in range(0, len(display), 1990)]:
                 await channel.send(chunk)

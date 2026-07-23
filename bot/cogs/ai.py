@@ -16,10 +16,11 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
+import memory
 import openrouter
 import tools
 from bot import agent_tools
-from bot.utils import is_owner
+from bot.utils import is_owner, owner_only
 
 log = logging.getLogger("ai")
 
@@ -86,6 +87,7 @@ class AI(commands.Cog):
             f"- /{cmd.name}: {cmd.description}"
             for cmd in sorted(self.bot.tree.get_commands(), key=lambda c: c.name)
         )
+        mem = await memory.get_context(guild.id)
         return (
             f"{persona}\n\n"
             f"You are {self.bot.user.display_name}, the bot that manages the Discord "
@@ -96,6 +98,7 @@ class AI(commands.Cog):
             f"{FEATURES}\n"
             f"{ABILITIES}\n"
             f"{OWNER_NOTE if owner else MEMBER_NOTE}"
+            + (f"\n\nWhat you remember (maintained across restarts):\n{mem}" if mem else "")
         )
 
     def _tool_handler(self, message: discord.Message):
@@ -117,6 +120,7 @@ class AI(commands.Cog):
         channel_history = self.history[message.channel.id]
 
         content = message.content.replace(self.bot.user.mention, "").strip() or "(no text)"
+        memory.record_turn(guild_id, message.author.display_name, content, "text")
 
         # Auto-attach repo details when the message contains GitHub links, so
         # the bot can analyze them (and follow-ups keep the context in history).
@@ -137,6 +141,7 @@ class AI(commands.Cog):
             max_tool_rounds=MAX_TOOL_ROUNDS,
         )
         channel_history.append({"role": "assistant", "content": reply})
+        memory.record_turn(guild_id, self.bot.user.display_name, reply, "text")
         return reply
 
     @commands.Cog.listener()
@@ -182,12 +187,30 @@ class AI(commands.Cog):
             log.warning("OpenRouter error: %s", exc)
             await interaction.followup.send("AI is unavailable right now.")
             return
+        memory.record_turn(interaction.guild.id, interaction.user.display_name, question, "text")
+        memory.record_turn(interaction.guild.id, self.bot.user.display_name, reply, "text")
         await interaction.followup.send(reply[:1990])
 
     @app_commands.command(description="Clear the AI's memory of this channel")
     async def aireset(self, interaction: discord.Interaction):
         self.history.pop(interaction.channel.id, None)
         await interaction.response.send_message("AI memory cleared for this channel.", ephemeral=True)
+
+    @app_commands.command(name="memory", description="Show or wipe the AI's persistent memory")
+    @app_commands.describe(wipe="Set true to erase both memory files")
+    @owner_only()
+    async def memory_cmd(self, interaction: discord.Interaction, wipe: bool = False):
+        if wipe:
+            await db.clear_memory(interaction.guild.id)
+            await interaction.response.send_message("Memory wiped (working + durable).", ephemeral=True)
+            return
+        durable, dv = await db.get_memory(interaction.guild.id, "durable")
+        working, wv = await db.get_memory(interaction.guild.id, "working")
+        text = (
+            f"**Durable memory** (v{dv}):\n{durable or '(empty)'}\n\n"
+            f"**Working memory** (v{wv}):\n{working or '(empty)'}"
+        )
+        await interaction.response.send_message(text[:1990], ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
