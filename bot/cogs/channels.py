@@ -21,6 +21,7 @@ class Channels(commands.Cog):
         app_commands.Choice(name="Text", value="text"),
         app_commands.Choice(name="Voice", value="voice"),
         app_commands.Choice(name="Category", value="category"),
+        app_commands.Choice(name="Forum", value="forum"),
     ])
     @app_commands.default_permissions(manage_channels=True)
     async def createchannel(self, interaction: discord.Interaction, name: str, kind: str = "text"):
@@ -29,6 +30,8 @@ class Channels(commands.Cog):
             channel = await guild.create_voice_channel(name)
         elif kind == "category":
             channel = await guild.create_category(name)
+        elif kind == "forum":
+            channel = await guild.create_forum(name)
         else:
             channel = await guild.create_text_channel(name)
         await log_action(guild, "channel_create", interaction.user, channel.name, kind)
