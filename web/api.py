@@ -273,7 +273,7 @@ async def channels(guild_id: str, request: Request):
 
 class ChannelCreateBody(BaseModel):
     name: str
-    type: str = "text"  # text | voice | category
+    type: str = "text"  # text | voice | category | forum
 
 
 @protected.post("/guilds/{guild_id}/channels")
@@ -283,6 +283,8 @@ async def create_channel(guild_id: str, body: ChannelCreateBody, request: Reques
         channel = await g.create_voice_channel(body.name)
     elif body.type == "category":
         channel = await g.create_category(body.name)
+    elif body.type == "forum":
+        channel = await g.create_forum(body.name)
     else:
         channel = await g.create_text_channel(body.name)
     await log_action(g, "channel_create", DASHBOARD_ACTOR, channel.name, body.type)

@@ -348,6 +348,7 @@ async function renderServer() {
       <select id="new-channel-type" style="max-width:110px">
         <option value="text">Text</option><option value="voice">Voice</option>
         <option value="category">Category</option>
+        <option value="forum">Forum</option>
       </select>
       <button class="btn primary sm" id="create-channel-btn">Add</button>
     </div>
