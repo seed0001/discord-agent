@@ -53,6 +53,9 @@ const activeStreams = new Set();   // "guildId:userId" with a live subscription
 const players = new Map();         // guildId -> AudioPlayer
 const configCache = new Map();     // guildId -> {at, data}
 const manualHold = new Map();      // guildId -> channelId pinned via /join
+const notReadySince = new Map();   // guildId -> ms timestamp connection left Ready
+const STUCK_CONNECTION_MS = 60_000;
+const SUBSCRIPTION_WATCHDOG_MS = 90_000;
 
 // -- python API -------------------------------------------------------------
 
@@ -144,13 +147,40 @@ function leaveGuild(guild) {
 
 async function rebalance(guild) {
   const cfg = await getConfig(guild.id);
-  const connection = getVoiceConnection(guild.id);
+  let connection = getVoiceConnection(guild.id);
   if (!cfg.enabled) {
     if (connection) leaveGuild(guild);
     return;
   }
+
+  // Zombie detection: a connection stuck out of Ready (dead UDP, missed
+  // disconnect event) is silently deaf — tear it down and rejoin.
+  if (connection) {
+    if (connection.state.status === VoiceConnectionStatus.Ready) {
+      notReadySince.delete(guild.id);
+    } else {
+      const since = notReadySince.get(guild.id) || Date.now();
+      notReadySince.set(guild.id, since);
+      if (Date.now() - since > STUCK_CONNECTION_MS) {
+        console.warn(`[listener] connection stuck in '${connection.state.status}' — rebuilding`);
+        notReadySince.delete(guild.id);
+        leaveGuild(guild);
+        connection = null;
+      } else {
+        return; // still within grace period, give it time to recover
+      }
+    }
+  }
+
   const held = manualHold.get(guild.id);
-  if (held && connection && connection.joinConfig.channelId === held) return;
+  if (held) {
+    const heldChannel = guild.channels.cache.get(held);
+    if (!heldChannel || humanCount(heldChannel) === 0) {
+      manualHold.delete(guild.id); // pinned channel emptied — resume auto mode
+    } else if (connection && connection.joinConfig.channelId === held) {
+      return;
+    }
+  }
 
   const current = connection && guild.channels.cache.get(connection.joinConfig.channelId);
   if (connection && current && humanCount(current) > 0) return; // stay put
@@ -178,7 +208,17 @@ function subscribeUser(connection, guild, userId) {
   const chunks = [];
   decoder.on('data', (chunk) => chunks.push(chunk));
 
+  // Watchdog: if the silence-end event never fires (stalled stream), force
+  // the utterance closed so the user isn't stuck "subscribed" and unheard.
+  const watchdog = setTimeout(() => {
+    console.warn(`[listener] subscription watchdog fired for user ${userId}`);
+    try { opusStream.destroy(); } catch {}
+    try { decoder.destroy(); } catch {}
+    finish();
+  }, SUBSCRIPTION_WATCHDOG_MS);
+
   const finish = () => {
+    clearTimeout(watchdog);
     if (!activeStreams.delete(key)) return; // already finished
     const pcm = Buffer.concat(chunks);
     if (pcm.length < MIN_PCM_BYTES) return;
@@ -289,6 +329,14 @@ client.once(Events.ClientReady, () => {
   rebalanceAll();
   for (const delay of [5_000, 15_000]) setTimeout(rebalanceAll, delay);
   setInterval(rebalanceAll, 30_000);
+  // Heartbeat so "the logs went quiet" is itself a diagnosable signal
+  setInterval(() => {
+    const conns = client.guilds.cache.map((g) => {
+      const c = getVoiceConnection(g.id);
+      return c ? `#${g.channels.cache.get(c.joinConfig.channelId)?.name || c.joinConfig.channelId} (${c.state.status})` : null;
+    }).filter(Boolean);
+    console.log(`[listener] heartbeat — voice: ${conns.join(', ') || 'not connected'}; active streams: ${activeStreams.size}`);
+  }, 300_000);
 });
 
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {

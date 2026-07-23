@@ -3,9 +3,12 @@
 All Discord snowflake IDs are serialized as strings — they exceed
 JavaScript's safe integer range.
 """
+import asyncio
+import os
 from datetime import timedelta
 
 import discord
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
@@ -269,6 +272,65 @@ async def channels(guild_id: str, request: Request):
     g = get_guild(request, guild_id)
     ordered = sorted(g.channels, key=lambda c: (c.category.position if c.category else -1, c.position))
     return [serialize_channel(c) for c in ordered]
+
+
+@protected.post("/bot/restart")
+async def restart_bot(request: Request):
+    """Exit the process; the platform's restart policy brings it back up."""
+    await log_action_safe(request)
+
+    async def _die():
+        await asyncio.sleep(1)
+        os._exit(1)
+
+    asyncio.create_task(_die())
+    return {"ok": True}
+
+
+async def log_action_safe(request: Request):
+    try:
+        bot = get_bot(request)
+        for g in bot.guilds:
+            await log_action(g, "bot_restart", DASHBOARD_ACTOR, None, "restart from dashboard")
+    except Exception:
+        pass
+
+
+def _voice_cog(request: Request):
+    cog = get_bot(request).get_cog("Voice")
+    if cog is None:
+        raise HTTPException(status_code=503, detail="Voice cog not loaded")
+    return cog
+
+
+@protected.post("/guilds/{guild_id}/voice/start")
+async def voice_start(guild_id: str, request: Request):
+    """Enable voice monitoring and join the busiest occupied channel now."""
+    g = get_guild(request, guild_id)
+    await db.set_setting(g.id, "voice_enabled", True)
+    occupied = [c for c in g.voice_channels if any(not m.bot for m in c.members)]
+    if not occupied:
+        return {"ok": True, "joined": None,
+                "detail": "Voice monitoring on — will join when someone enters a voice channel"}
+    target = max(occupied, key=lambda c: sum(1 for m in c.members if not m.bot))
+    try:
+        await _voice_cog(request)._sidecar(
+            "POST", "/join", {"guild_id": str(g.id), "channel_id": str(target.id)})
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Voice listener unreachable: {exc}")
+    return {"ok": True, "joined": target.name}
+
+
+@protected.post("/guilds/{guild_id}/voice/stop")
+async def voice_stop(guild_id: str, request: Request):
+    """Disable voice monitoring and leave voice."""
+    g = get_guild(request, guild_id)
+    await db.set_setting(g.id, "voice_enabled", False)
+    try:
+        await _voice_cog(request)._sidecar("POST", "/leave", {"guild_id": str(g.id)})
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Voice listener unreachable: {exc}")
+    return {"ok": True}
 
 
 @protected.get("/guilds/{guild_id}/transcripts")

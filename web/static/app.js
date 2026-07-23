@@ -192,7 +192,15 @@ async function renderOverview() {
       <div class="grow"><div style="font-weight:600">${esc(me.name)}</div>
       <div class="muted">${me.guild_count} server(s) · ${me.latency_ms}ms</div></div>
       <span class="badge ok">online</span>
+    </div>
+    <div class="btn-row" style="margin-top:10px">
+      <button class="btn danger" id="restart-bot-btn">Restart bot</button>
     </div>`;
+  $("#restart-bot-btn").onclick = () =>
+    confirmAction("Restart the whole bot? It'll be back in ~30 seconds.", async () => {
+      await api("/bot/restart", { method: "POST" });
+      toast("Restarting — give it ~30s, then refresh.");
+    });
 }
 
 /* ---------- members ---------- */
@@ -437,12 +445,24 @@ async function renderVoice() {
       <label class="muted" style="display:flex;align-items:center;gap:6px;font-size:13px">
         <input type="checkbox" id="voice-follow" checked> follow
       </label>
+      <button class="btn primary sm" id="voice-start-btn">Start</button>
+      <button class="btn sm" id="voice-stop-btn">Stop</button>
     </div>
     <div id="voice-console" class="console"><div class="muted" style="padding:8px">Loading…</div></div>`;
   $("#voice-channel").addEventListener("change", (e) => {
     state.voiceChannel = e.target.value;
     refreshVoice(true).catch(() => {});
   });
+  $("#voice-start-btn").onclick = async () => {
+    const r = await api(`/guilds/${state.guildId}/voice/start`, { method: "POST" });
+    toast(r.joined ? `Listening in #${r.joined}` : (r.detail || "Voice monitoring on"));
+    refreshVoice(true).catch(() => {});
+  };
+  $("#voice-stop-btn").onclick = async () => {
+    await api(`/guilds/${state.guildId}/voice/stop`, { method: "POST" });
+    toast("Voice monitoring stopped");
+    refreshVoice(true).catch(() => {});
+  };
   await refreshVoice(true);
   state.voiceTimer = setInterval(() => refreshVoice(false).catch(() => {}), 3000);
 }
@@ -467,6 +487,9 @@ async function refreshVoice(force) {
   } else if (data.listening) {
     live.textContent = "listening";
     live.className = "badge ok";
+  } else if (data.voice_enabled === false) {
+    live.textContent = "stopped";
+    live.className = "badge danger";
   } else {
     live.textContent = "idle";
     live.className = "badge";

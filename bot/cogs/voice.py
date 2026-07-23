@@ -231,7 +231,8 @@ class Voice(commands.Cog):
             })
         channels.sort(key=lambda c: c["lines"][-1]["ts"], reverse=True)
         return {"channels": channels, "listening": listening,
-                "enabled": transcription.available()}
+                "enabled": transcription.available(),
+                "voice_enabled": bool(await db.get_setting(guild.id, "voice_enabled"))}
 
     # -- owner commands (proxied to the sidecar's control API) ----------------
 
