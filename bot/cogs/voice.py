@@ -28,6 +28,7 @@ import db
 import openrouter
 import tools
 import transcription
+import tts
 from bot.utils import log_action, owner_only
 
 log = logging.getLogger("voice")
@@ -45,6 +46,18 @@ VOICE_PROMPT = (
     "positions people have taken, and the vibe. Weigh in directly and "
     "conversationally — this will be read (and maybe spoken) aloud in the "
     "channel, so keep it tight, no markdown, no walls of text."
+)
+
+FISH_TAG_PROMPT = (
+    "\nYour reply is spoken aloud through a voice engine that understands "
+    "emotion tags. Sprinkle tags into your reply — in parentheses, at the "
+    "start of a sentence — to give your voice the right delivery. Use them "
+    "naturally, 1-3 per reply, matching your chill persona and the moment. "
+    "Available tags: (relaxed) (amused) (excited) (curious) (confident) "
+    "(joyful) (serious) (sarcastic) (comforting) (empathetic) (surprised) "
+    "(hesitating) (whispering) (soft tone) (laughing) (chuckling) (sighing) "
+    "(break). Example: \"(relaxed) honestly dude, both of you have a point. "
+    "(chuckling) but the tabs-vs-spaces thing died in 2015.\""
 )
 
 
@@ -148,6 +161,8 @@ class Voice(commands.Cog):
         system_prompt = base_prompt + VOICE_PROMPT.format(
             channel=channel.name, speaker=speaker_name
         )
+        if tts.fish_enabled():
+            system_prompt += FISH_TAG_PROMPT
         lines = [e for e in self.transcripts[channel.id] if not e.get("system")][-CONTEXT_LINES:]
         transcript = "\n".join(f"{e['name']}: {e['text']}" for e in lines)
         model = await db.get_setting(guild.id, "ai_model")
@@ -163,28 +178,17 @@ class Voice(commands.Cog):
             return None
         if not reply:
             return None
+        # The tagged reply goes to TTS; chat and the transcript get clean text
+        display = tts.strip_voice_tags(reply) or reply
         self.transcripts[channel.id].append(
-            {"ts": time.time(), "name": self.bot.user.display_name, "text": reply, "bot": True})
+            {"ts": time.time(), "name": self.bot.user.display_name, "text": display, "bot": True})
         try:
-            for chunk in [reply[i:i + 1990] for i in range(0, len(reply), 1990)]:
+            for chunk in [display[i:i + 1990] for i in range(0, len(display), 1990)]:
                 await channel.send(chunk)
         except discord.HTTPException:
             pass
-        return await self._tts(reply)
-
-    async def _tts(self, text: str) -> str | None:
-        """Generate TTS mp3 via edge-tts, base64-encoded for the sidecar."""
-        try:
-            import edge_tts
-
-            buf = bytearray()
-            async for chunk in edge_tts.Communicate(text[:800], voice="en-US-GuyNeural").stream():
-                if chunk["type"] == "audio":
-                    buf += chunk["data"]
-            return base64.b64encode(bytes(buf)).decode() if buf else None
-        except Exception as exc:
-            log.info("TTS unavailable (%s) — text reply only", exc)
-            return None
+        audio = await tts.synthesize(reply)
+        return base64.b64encode(audio).decode() if audio else None
 
     # -- dashboard data --------------------------------------------------------
 

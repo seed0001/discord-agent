@@ -67,6 +67,9 @@ Create a key at [openrouter.ai/keys](https://openrouter.ai/keys) — this is `OP
    | `DATABASE_PATH` | `/data/bot.db` |
    | `GITHUB_TOKEN` | *(optional)* GitHub token — raises the repo-analysis API rate limit |
    | `TRANSCRIPTION_API_KEY` | *(optional)* OpenAI or Groq key — enables voice monitoring |
+   | `FISH_API_KEY` | *(optional)* fish.audio key — natural TTS voice for spoken replies |
+   | `FISH_VOICE_ID` | *(optional)* fish.audio voice model reference id to speak with |
+   | `FISH_TTS_MODEL` | *(optional)* fish.audio model, default `s1` (supports emotion tags) |
 
 4. Attach a **Volume** to the service mounted at `/data` (so settings/warnings survive
    redeploys).
