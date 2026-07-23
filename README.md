@@ -15,11 +15,14 @@ as a single service (bot + dashboard in one process).
 - AI: `/ask`, `/aireset`, and the bot replies whenever it's @mentioned
 - AI tools: DuckDuckGo web search, plus GitHub repo analysis (share a repo
   link and the bot pulls its stats, languages, and README to discuss it)
-- Voice monitoring: the bot joins occupied voice channels, transcribes each
-  speaker separately, flags banned words to the mod log, and joins the
+- Voice monitoring (hybrid): a Node.js sidecar (`listener/`) joins occupied
+  voice channels — it speaks Discord's DAVE E2EE voice protocol via
+  discord.js, which Python libraries don't support yet — receives each
+  speaker separately, and streams utterances to the Python bot, which
+  transcribes them, flags banned words to the mod log, and joins the
   conversation (text + TTS) when someone says a wake word — `/voicejoin`
-  `/voiceleave` `/wakewords` (needs `TRANSCRIPTION_API_KEY`; announces
-  itself in the channel when it starts listening)
+  `/voiceleave` `/wakewords` (needs `TRANSCRIPTION_API_KEY` and
+  `SECRET_KEY`; announces itself in the channel when it starts listening)
 - Welcome/goodbye messages + autorole for new members
 - Automod: banned words, invite-link blocking, mention-spam limits
 - Mod log channel + persistent action history

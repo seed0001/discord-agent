@@ -1,6 +1,10 @@
-# Extra system packages for voice support, installed via apt so the libraries
-# land in standard paths where ctypes can find them:
-# libopus0 — decoding incoming voice streams (discord-ext-voice-recv)
-# ffmpeg   — playing TTS audio back into the channel
+# Hybrid runtime: Python bot + Node.js voice listener sidecar.
+# nodejs   — runs listener/ (discord.js voice with DAVE E2EE support)
+# ffmpeg   — TTS mp3 playback in the sidecar (via prism-media)
 [phases.setup]
-aptPkgs = ["ffmpeg", "libopus0"]
+nixPkgs = ["...", "nodejs_22"]
+aptPkgs = ["ffmpeg"]
+
+[phases.listener]
+dependsOn = ["install"]
+cmds = ["cd listener && npm ci --omit=dev"]
