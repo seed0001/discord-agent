@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 import db
+import logbuffer
 from bot.utils import log_action
 from web.auth import check_password, create_token, require_auth, TOKEN_TTL
 
@@ -272,6 +273,13 @@ async def channels(guild_id: str, request: Request):
     g = get_guild(request, guild_id)
     ordered = sorted(g.channels, key=lambda c: (c.category.position if c.category else -1, c.position))
     return [serialize_channel(c) for c in ordered]
+
+
+@protected.get("/logs")
+async def get_logs(after: int = 0, limit: int = 500):
+    entries = logbuffer.since(after, min(limit, 1000))
+    return {"entries": entries,
+            "latest": entries[-1]["id"] if entries else after}
 
 
 @protected.post("/bot/restart")
