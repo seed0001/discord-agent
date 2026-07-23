@@ -1,4 +1,6 @@
-discord.py[voice]>=2.4,<3
+# <2.7: discord.py 2.7.x corrupts received voice audio with voice-recv
+# (imayhaveborkedit/discord-ext-voice-recv#53); 2.6.4 is the known-good version
+discord.py[voice]>=2.6.4,<2.7
 discord-ext-voice-recv==0.5.2a179
 edge-tts>=6.1
 fastapi>=0.115
