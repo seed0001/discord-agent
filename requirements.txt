@@ -1,4 +1,6 @@
-discord.py>=2.4,<3
+discord.py[voice]>=2.4,<3
+discord-ext-voice-recv>=0.5.1
+edge-tts>=6.1
 fastapi>=0.115
 uvicorn>=0.30
 aiosqlite>=0.20

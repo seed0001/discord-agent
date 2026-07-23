@@ -31,7 +31,9 @@ FEATURES = (
     "Beyond slash commands, you also handle: automod (banned words, invite "
     "blocking, mention spam), welcome/goodbye messages with an optional "
     "autorole, moderation logging, and a mobile web dashboard where admins "
-    "configure all of this (including your AI settings and this very persona)."
+    "configure all of this (including your AI settings and this very persona). "
+    "You also sit in occupied voice channels, transcribing each speaker for "
+    "moderation, and you join the conversation when someone says your wake word."
 )
 
 ABILITIES = (
