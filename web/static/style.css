@@ -198,3 +198,5 @@ label.toggle input { width: auto; accent-color: var(--accent); transform: scale(
 .console-line.bot .who { color: #4ade80; }
 .console-line.flagged { background: rgba(218,55,60,.10); border-radius: 4px; }
 .console-line.system { color: #5d636e; font-style: italic; }
+.console-line.log-warn { color: #f0b232; }
+.console-line.log-err { color: #ff8085; background: rgba(218,55,60,.08); border-radius: 4px; }

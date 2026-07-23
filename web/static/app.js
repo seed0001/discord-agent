@@ -156,12 +156,14 @@ document.querySelectorAll("#tabbar button").forEach((btn) => {
 
 function render() {
   clearInterval(state.voiceTimer); // stop console polling when leaving the tab
+  clearInterval(state.logsTimer);
   const renderers = {
     overview: renderOverview,
     members: renderMembers,
     server: renderServer,
     voice: renderVoice,
     mod: renderMod,
+    logs: renderLogs,
     settings: renderSettings,
   };
   content().innerHTML = `<div class="card"><p class="muted">Loading…</p></div>`;
@@ -518,6 +520,61 @@ async function refreshVoice(force) {
     box.innerHTML = html;
     box._html = html;
     if (force || follow) box.scrollTop = box.scrollHeight;
+  }
+}
+
+/* ---------- logs ---------- */
+
+async function renderLogs() {
+  content().innerHTML = `
+    <div class="section-title">Live logs</div>
+    <div class="inline-form">
+      <select id="logs-level" style="max-width:120px">
+        <option value="">All levels</option>
+        <option value="INFO">Info+</option>
+        <option value="WARNING">Warnings+</option>
+        <option value="ERROR">Errors</option>
+      </select>
+      <input id="logs-filter" placeholder="Filter (e.g. listener, voice, memory)…">
+      <label class="muted" style="display:flex;align-items:center;gap:6px;font-size:13px">
+        <input type="checkbox" id="logs-follow" checked> follow
+      </label>
+    </div>
+    <div id="logs-console" class="console"><div class="muted" style="padding:8px">Loading…</div></div>`;
+  $("#logs-level").addEventListener("change", () => refreshLogs(true).catch(() => {}));
+  $("#logs-filter").addEventListener("input", () => refreshLogs(true).catch(() => {}));
+  await refreshLogs(true);
+  state.logsTimer = setInterval(() => refreshLogs(false).catch(() => {}), 3000);
+}
+
+const LEVEL_RANK = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
+
+function logLine(e) {
+  const t = new Date(e.ts * 1000).toLocaleTimeString([], { hour12: false });
+  const lvl = e.level === "WARNING" ? "log-warn"
+    : (e.level === "ERROR" || e.level === "CRITICAL") ? "log-err" : "";
+  return `<div class="console-line ${lvl}"><span class="t">${t}</span> ` +
+    `<span class="who">${esc(e.logger)}</span> ${esc(e.message)}</div>`;
+}
+
+async function refreshLogs(force) {
+  const box = $("#logs-console");
+  if (!box) return;
+  const data = await api(`/logs`);
+  const minRank = LEVEL_RANK[$("#logs-level").value] ?? 0;
+  const needle = $("#logs-filter").value.toLowerCase();
+  let entries = data.entries.filter((e) => (LEVEL_RANK[e.level] ?? 1) >= minRank);
+  if (needle) {
+    entries = entries.filter((e) =>
+      e.logger.toLowerCase().includes(needle) || e.message.toLowerCase().includes(needle));
+  }
+  const html = entries.length
+    ? entries.map(logLine).join("")
+    : `<div class="muted" style="padding:8px">No matching log lines yet.</div>`;
+  if (box._html !== html) {
+    box.innerHTML = html;
+    box._html = html;
+    if (force || $("#logs-follow").checked) box.scrollTop = box.scrollHeight;
   }
 }
 
