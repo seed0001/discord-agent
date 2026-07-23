@@ -36,24 +36,33 @@ S1_TAGS = {
     "hesitating", "yielding", "painful", "awkward", "amused",
     # tones
     "in a hurry tone", "shouting", "screaming", "whispering", "soft tone",
-    # effects / pauses
+    # effects / pauses (includes S2 paralanguage cues, also parenthesized)
     "laughing", "chuckling", "sobbing", "crying loudly", "sighing",
     "panting", "groaning", "break", "long-break", "breath",
+    "laugh", "cough", "sigh", "lip-smacking",
 }
 
 _TAG_RE = re.compile(
     r"\((?:" + "|".join(re.escape(t) for t in sorted(S1_TAGS, key=len, reverse=True)) + r")\)\s*",
     re.IGNORECASE,
 )
+# S2 models take free-form [bracketed] voice directions anywhere in the text
+_S2_TAG_RE = re.compile(r"\[[^\[\]\n]{1,60}\]\s*")
 
 
 def fish_enabled() -> bool:
     return bool(config.FISH_API_KEY)
 
 
+def is_s2() -> bool:
+    return config.FISH_TTS_MODEL.lower().startswith("s2")
+
+
 def strip_voice_tags(text: str) -> str:
-    """Remove S1 voice tags for text display; the tagged version goes to TTS."""
-    return _TAG_RE.sub("", text).strip()
+    """Remove voice tags for text display; the tagged version goes to TTS."""
+    text = _TAG_RE.sub("", text)
+    text = _S2_TAG_RE.sub("", text)
+    return text.strip()
 
 
 async def synthesize(text: str) -> bytes | None:
