@@ -25,6 +25,7 @@ import openrouter
 import tts
 from bot.cogs import voice as voice_mod
 from bot.utils import owner_only
+from gudda_bridge import GuddaBridge, BinaryHDVector, encode_text, sdm_snr_threshold
 from pressure import PressureEngine, Proposal, Signal, SqliteStore
 
 log = logging.getLogger("proactive")
@@ -35,6 +36,49 @@ CLASSIFY_MIN_INTERVAL = 20.0    # per-channel classification rate cap — messag
 CLASSIFY_MIN_CHARS = 12         # skip trivial messages
 CONTEXT_LINES = 12              # recent lines given to classifier/drafter
 VOICE_CONFIDENCE_SCALE = 0.85   # transcripts are noisier than typed text
+HD_DIM = 10000                  # HD vector dimensionality
+
+# Prototype signal vectors  (deterministic from_key)
+HD_SIGNAL_PROTOTYPES: dict[str, BinaryHDVector] | None = None
+_HD_SIM_THRESHOLD: float | None = None
+
+
+def _init_hd_prototypes():
+    """Build prototype vectors once."""
+    global HD_SIGNAL_PROTOTYPES, _HD_SIM_THRESHOLD
+    if HD_SIGNAL_PROTOTYPES is not None:
+        return
+    HD_SIGNAL_PROTOTYPES = {
+        "incorrect_claim":  BinaryHDVector.from_key("signal:incorrect_claim", HD_DIM),
+        "blocker":          BinaryHDVector.from_key("signal:blocker", HD_DIM),
+        "safety_concern":   BinaryHDVector.from_key("signal:safety_concern", HD_DIM),
+        "promised_followup": BinaryHDVector.from_key("signal:promised_followup", HD_DIM),
+    }
+    d_snr = sdm_snr_threshold(HD_DIM)          # Hamming distance
+    _HD_SIM_THRESHOLD = 1.0 - d_snr / HD_DIM   # → XNOR similarity ∈ [0,1]
+
+
+def _hd_preclassify(text: str) -> dict[str, float]:
+    """Compute XNOR-popcount similarity of ``text`` against each prototype.
+
+    Returns dict mapping signal source → similarity score.
+    Similarity below SDM SNR threshold means the text is noise w.r.t. that
+    signal — indistinguishable from random.
+    """
+    _init_hd_prototypes()
+    if not text.strip():
+        return {}
+    fp = encode_text(text, HD_DIM)
+    scores: dict[str, float] = {}
+    for source, proto in HD_SIGNAL_PROTOTYPES.items():
+        scores[source] = fp.xnor_popcount_similarity(proto)
+    return scores
+
+
+def _hd_any_signal(scores: dict[str, float]) -> bool:
+    """True if at least one prototype scores above the SDM SNR threshold."""
+    th = _HD_SIM_THRESHOLD
+    return any(s >= th for s in scores.values())
 
 CLASSIFY_PROMPT = (
     "You monitor a Discord channel for an assistant bot that may speak up "
@@ -147,6 +191,19 @@ class Proactive(commands.Cog):
         batch = "\n".join(self.pending[channel_id])
         self.pending[channel_id] = []
 
+        # ── HD pre-classification gate ──────────────────────────────────
+        hd_scores = _hd_preclassify(batch)
+        hd_scores_fmt = ", ".join(f"{k}={v:.4f}" for k, v in sorted(hd_scores.items()))
+        has_signal = _hd_any_signal(hd_scores) if hd_scores else False
+        log.info("HD preclassify [%s]: %s  signal=%s  thresh=%.4f",
+                 channel_id, hd_scores_fmt, has_signal, _HD_SIM_THRESHOLD)
+        if not has_signal:
+            log.info("HD gate: skipping LLM classify for channel %s "
+                     "(%.1fs since last, %d pending — all below SNR)",
+                     channel_id, now - self.last_classify.get(channel_id, now), 0)
+            return
+
+        # ── LLM signal classification ───────────────────────────────────
         engine = self.engine(guild.id)
         prompt = CLASSIFY_PROMPT.format(
             sources=", ".join(engine.config.source_routing),

@@ -38,6 +38,7 @@ from collections import defaultdict, deque
 
 import db
 import openrouter
+from gudda_bridge import BinaryHDVector, HDVector, encode_turn, bundle_all
 
 log = logging.getLogger("memory")
 
@@ -65,6 +66,149 @@ _STOPWORDS = {
     "actually", "someone", "something", "anything", "everything", "people",
 }
 
+# ===================================================================
+# HD Memory Accumulator Store
+# ===================================================================
+HD_DIM = 10000
+
+
+class HDMemoryStore:
+    """Per-guild hypervector accumulators for zero-latency similarity retrieval.
+
+    Conjunctive accumulator: real-valued MAP sum of turn vectors (element-wise
+    addition).  Binarized on query to yield the current majority-rule / "common
+    ground" vector.
+
+    Disjunctive accumulator: same approach but updated sparsely to capture
+    topic breadth without saturating on high-frequency signals.
+
+    Profile hypervectors: one per member, superposed from profile card fields
+    via deterministic from_key + bundle_all (one-shot, not accumulated).
+    """
+
+    SAVE_EVERY = 25  # persist to SQLite every N ingested turns
+
+    __slots__ = (
+        "guild_id", "_conjunctive", "_disjunctive",
+        "_profile_vectors", "_turn_count", "_save_counter",
+    )
+
+    def __init__(self, guild_id: int):
+        self.guild_id = guild_id
+        # Internal: MAP real-valued accumulators (never stored externally —
+        # binarized on save and on query).
+        self._conjunctive: HDVector | None = None
+        self._disjunctive: HDVector | None = None
+        self._profile_vectors: dict[int, BinaryHDVector] = {}
+        self._turn_count = 0
+        self._save_counter = 0
+
+    # -- ingestion -----------------------------------------------------------
+
+    def ingest_turn(self, vec: BinaryHDVector) -> None:
+        """Update MAP accumulators with a single turn vector."""
+        self._turn_count += 1
+        # Convert BSC 0/1 → MAP ±1 for real-valued accumulation
+        bits = vec.to_bits()
+        map_vec = HDVector(HD_DIM, [1.0 if b else -1.0 for b in bits])
+
+        # Conjunctive: always add (element-wise sum → majority on query)
+        if self._conjunctive is None:
+            self._conjunctive = map_vec
+        else:
+            self._conjunctive = self._conjunctive.bundle(map_vec)
+
+        # Disjunctive: every 5th turn (sparse — avoids over-weighting
+        # high-frequency chatter)
+        if self._turn_count % 5 == 1:
+            if self._disjunctive is None:
+                self._disjunctive = map_vec
+            else:
+                self._disjunctive = self._disjunctive.bundle(map_vec)
+
+        self._save_counter += 1
+
+    # -- query helpers  (binarize MAP → BSC) ---------------------------------
+
+    def _binarize(self, acc: HDVector | None) -> BinaryHDVector | None:
+        if acc is None:
+            return None
+        # sign-threshold:  x > 0 → 1,  x ≤ 0 → 0
+        bits = [1 if x > 0 else 0 for x in acc.data]
+        return BinaryHDVector(HD_DIM, bits)
+
+    def get_conjunctive(self) -> BinaryHDVector | None:
+        return self._binarize(self._conjunctive)
+
+    def get_disjunctive(self) -> BinaryHDVector | None:
+        return self._binarize(self._disjunctive)
+
+    # -- profile vectors -----------------------------------------------------
+
+    def set_profile_vector(self, user_id: int, fields: dict) -> None:
+        """Superpose profile card fields into a unified member hypervector."""
+        vecs = []
+        for key in ("goals", "active_projects", "constraints", "vibe_notes"):
+            val = fields.get(key)
+            if val:
+                vecs.append(BinaryHDVector.from_key(f"{key}:{val}", HD_DIM))
+        if vecs:
+            self._profile_vectors[user_id] = bundle_all(*vecs, dim=HD_DIM)
+        elif user_id in self._profile_vectors:
+            del self._profile_vectors[user_id]
+
+    def get_profile_vector(self, user_id: int) -> BinaryHDVector | None:
+        return self._profile_vectors.get(user_id)
+
+    # -- persistence ---------------------------------------------------------
+
+    async def save(self) -> None:
+        """Persist binarized accumulators to SQLite."""
+        conj = self.get_conjunctive()
+        if conj is not None:
+            await db.save_hd_memory(self.guild_id, "conjunctive",
+                                    conj.to_bits(), HD_DIM)
+        disj = self.get_disjunctive()
+        if disj is not None:
+            await db.save_hd_memory(self.guild_id, "disjunctive",
+                                    disj.to_bits(), HD_DIM)
+        for uid, pv in self._profile_vectors.items():
+            await db.save_hd_memory(self.guild_id, f"profile:{uid}",
+                                    pv.to_bits(), HD_DIM)
+        self._save_counter = 0
+
+    async def load(self) -> None:
+        """Restore binarized accumulators from SQLite.
+
+        Because MAP sum is not stored (only its binarized snapshot), the
+        restored accumulator has no historical weight — it's a "cold restart."
+        New turns ingested after load rebuild the real-valued sum from here.
+        """
+        con = await db.get_hd_memory(self.guild_id, "conjunctive")
+        if con:
+            bits, _ = con
+            # Rebuild MAP sum from binarized form: +1 for 1, -1 for 0,
+            # scaled by 1 so sign-threshold returns the same bits.
+            data = [1.0 if b else -1.0 for b in bits]
+            self._conjunctive = HDVector(HD_DIM, data)
+        dis = await db.get_hd_memory(self.guild_id, "disjunctive")
+        if dis:
+            bits, _ = dis
+            data = [1.0 if b else -1.0 for b in bits]
+            self._disjunctive = HDVector(HD_DIM, data)
+
+    # -- zero-latency queries ------------------------------------------------
+
+    def get_context(self) -> dict:
+        """Return binarized accumulators for immediate use — zero I/O."""
+        return {
+            "conjunctive": self.get_conjunctive(),
+            "disjunctive": self.get_disjunctive(),
+            "profile_vectors": dict(self._profile_vectors),
+        }
+
+
+_stores: dict[int, HDMemoryStore] = {}
 _turns: dict[int, deque] = defaultdict(lambda: deque(maxlen=TURN_BUFFER))
 _counts: dict[int, int] = defaultdict(int)
 _since_rollup: dict[int, int] = defaultdict(int)
@@ -119,6 +263,9 @@ def record_turn(guild_id: int, speaker: str, text: str, source: str = "text",
                 user_id: int | None = None) -> None:
     """Buffer a conversation turn and schedule memory maintenance.
 
+    Also encodes the turn into a hypervector and updates the per-guild HD
+    memory accumulators for zero-latency similarity queries.
+
     user_id identifies the human who said this (for profile-card tagging at
     consolidation time). Leave it None for the bot's own turns — Max doesn't
     get a profile card built about himself."""
@@ -131,6 +278,19 @@ def record_turn(guild_id: int, speaker: str, text: str, source: str = "text",
     })
     _counts[guild_id] += 1
     _since_rollup[guild_id] += 1
+
+    # ── HD ingestion ───────────────────────────────────────────────────
+    if guild_id not in _stores:
+        store = HDMemoryStore(guild_id)
+        _stores[guild_id] = store
+    else:
+        store = _stores[guild_id]
+    vec = encode_turn(speaker, text, time.time(), source, dim=HD_DIM) if text else None
+    if vec is not None:
+        store.ingest_turn(vec)
+    if store._save_counter >= HDMemoryStore.SAVE_EVERY:
+        _schedule(store.save())
+
     if _since_rollup[guild_id] >= CONSOLIDATE_EVERY:
         _since_rollup[guild_id] = 0
         _schedule(_consolidate(guild_id))
@@ -175,6 +335,22 @@ async def get_context(guild_id: int, user_id: int | None = None) -> str:
     if working:
         parts.append(f"[WORKING MEMORY — the current conversation context]\n{working}")
     return "\n\n".join(parts)
+
+
+def get_hd_context(guild_id: int, user_id: int | None = None) -> dict:
+    """Zero-latency retrieval of HD memory accumulators.
+
+    Returns dict with keys 'conjunctive', 'disjunctive', and (if user_id given)
+    'profile' — each a BinaryHDVector or None. All vectors live in-memory after
+    the most recent ingestion; no I/O is performed.
+    """
+    store = _stores.get(guild_id)
+    if store is None:
+        return {"conjunctive": None, "disjunctive": None, "profile": None}
+    ctx = store.get_context()
+    profile = store.get_profile_vector(user_id) if user_id is not None else None
+    ctx["profile"] = profile
+    return ctx
 
 
 async def _format_profile(guild_id: int, user_id: int) -> str:
@@ -321,7 +497,9 @@ async def _consolidate(guild_id: int) -> None:
 
 async def _save_profile(guild_id: int, user_id: int, name: str, fields: dict) -> None:
     """Merge new profile fields into the member's card — never blind-overwrite
-    fields the model didn't mention this round."""
+    fields the model didn't mention this round.
+
+    Also superposes the updated fields into a unified member hypervector."""
     existing = await _load_profile(guild_id, user_id) or {}
     existing["name"] = name
     existing["user_id"] = user_id
@@ -331,6 +509,11 @@ async def _save_profile(guild_id: int, user_id: int, name: str, fields: dict) ->
         if value:
             existing[key] = str(value)[:PROFILE_FIELD_MAX]
     await db.set_memory(guild_id, f"profile:{user_id}", json.dumps(existing))
+
+    # Superpose into HD profile vector for zero-latency similarity queries
+    store = _stores.get(guild_id)
+    if store is not None:
+        store.set_profile_vector(user_id, existing)
 
 
 _ACRONYM_RE = re.compile(r"\b[A-Z]{2,6}\b|\b[A-Za-z]+\d+\b|\b\d+[A-Za-z]+\b")

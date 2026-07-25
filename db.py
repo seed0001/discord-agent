@@ -5,6 +5,7 @@ settings (e.g. presence) use guild_id 0.
 """
 import json
 import os
+import struct
 import time
 
 import aiosqlite
@@ -56,6 +57,14 @@ CREATE TABLE IF NOT EXISTS memory_versions (
 CREATE INDEX IF NOT EXISTS idx_warnings_guild_user ON warnings (guild_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_logs_guild ON mod_logs (guild_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_memver ON memory_versions (guild_id, kind, version);
+CREATE TABLE IF NOT EXISTS hd_memory (
+    guild_id   INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    dim        INTEGER NOT NULL,
+    bits       BLOB NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, kind)
+);
 """
 
 DEFAULTS = {
@@ -200,7 +209,57 @@ async def set_memory(guild_id: int, kind: str, content: str) -> int:
 async def clear_memory(guild_id: int) -> None:
     await _db.execute("DELETE FROM memory WHERE guild_id = ?", (guild_id,))
     await _db.execute("DELETE FROM memory_versions WHERE guild_id = ?", (guild_id,))
+    await _db.execute("DELETE FROM hd_memory WHERE guild_id = ?", (guild_id,))
     await _db.commit()
+
+
+# -- HD vector memory --------------------------------------------------------
+
+def _pack_to_blob(bits: list[int]) -> bytes:
+    """Pack a flat list of 0/1 ints into a binary blob (u64 words)."""
+    n = len(bits)
+    words = []
+    for i in range(0, n, 64):
+        w = 0
+        for j in range(64):
+            if i + j < n and bits[i + j]:
+                w |= 1 << j
+        words.append(w)
+    return struct.pack(f"{len(words)}Q", *words)
+
+
+def _unpack_blob(blob: bytes, dim: int) -> list[int]:
+    """Unpack a binary blob back to a flat list of 0/1 ints."""
+    words = list(struct.unpack(f"{len(blob) // 8}Q", blob))
+    bits = []
+    for i in range(dim):
+        word_idx = i >> 6  # i // 64
+        bit_idx = i & 63   # i % 64
+        bits.append(1 if (words[word_idx] >> bit_idx) & 1 else 0)
+    return bits
+
+
+async def save_hd_memory(guild_id: int, kind: str, bits: list[int], dim: int) -> None:
+    """Persist an HD vector as bit-packed BLOB."""
+    blob = _pack_to_blob(bits)
+    await _db.execute(
+        "INSERT OR REPLACE INTO hd_memory (guild_id, kind, dim, bits, updated_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (guild_id, kind, dim, blob, int(time.time())),
+    )
+    await _db.commit()
+
+
+async def get_hd_memory(guild_id: int, kind: str) -> tuple[list[int], int] | None:
+    """Load HD vector. Returns (bits, dim) or None if missing."""
+    cur = await _db.execute(
+        "SELECT dim, bits FROM hd_memory WHERE guild_id = ? AND kind = ?",
+        (guild_id, kind),
+    )
+    row = await cur.fetchone()
+    if not row:
+        return None
+    return _unpack_blob(row["bits"], row["dim"]), row["dim"]
 
 
 # -- warnings ---------------------------------------------------------------
