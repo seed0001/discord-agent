@@ -39,10 +39,11 @@ tools, wake pipeline, prompts, models, limitations, roadmap)
 - Persistent memory, updated live: a working-memory file (current topic,
   open questions, recent meaningful turns) and a durable-memory file (dated
   facts/preferences/decisions with confidence) are both rewritten after
-  every single turn — text or voice, from anyone — so something said in
-  chat is already in memory the next time anyone talks to the bot, in
-  either modality, no batching delay; stored versioned in SQLite, injected
-  into every reply; `/memory` shows or wipes it (owner)
+  every single turn — text or voice, from anyone, in every channel, tagged
+  with exactly where it happened (`#general`, `voice/General`, ...) — so
+  something posted in one channel can be recalled later from a completely
+  different channel or from voice, no batching delay; stored versioned in
+  SQLite, injected into every reply; `/memory` shows or wipes it (owner)
 - Voice monitoring (hybrid): a Node.js sidecar (`listener/`) joins occupied
   voice channels — it speaks Discord's DAVE E2EE voice protocol via
   discord.js, which Python libraries don't support yet — receives each

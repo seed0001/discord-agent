@@ -32,11 +32,15 @@ claims, stalled progress, and safety concerns. Pressure builds, decays, and
 something useful. Strict gates stop him from spamming, repeating himself,
 or butting into heated exchanges.
 
-**Remembers, live.** A two-tier memory (working + durable) persists across
-restarts: current conversation context on one shelf, long-term facts and
-preferences on the other. It updates after every single turn, not on a
-delay — say something in a text channel and it's already in memory the
-next time he talks in voice, and vice versa.
+**Remembers, live, everywhere.** A two-tier memory (working + durable)
+persists across restarts: current conversation context on one shelf,
+long-term facts and preferences on the other. It updates after every
+single turn, not on a delay, and every turn is tagged with exactly where
+it happened — say something in #general and it's already in memory,
+labeled as coming from #general, the next time he talks in voice, and vice
+versa. He watches every text channel, not just the ones he's mentioned in
+or configured to always reply in — post something anywhere and ask him
+about it later from a totally different channel or from voice.
 
 **Looks things up.** Web search (DuckDuckGo) and GitHub repo analysis —
 drop a repo link and he'll pull its stats, languages, and README and

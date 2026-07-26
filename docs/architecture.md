@@ -65,7 +65,9 @@ its lineage (adapted from seed0001/digital-pressure) and
 
 ### Cross-cutting organs
 - `memory.py` — two-tier persistent memory (working + durable), both
-  consolidated live after every turn, injected into every prompt
+  consolidated live after every turn — every text message in every channel,
+  not just ones addressing the bot, plus voice — each tagged with the
+  channel it happened in, injected into every prompt
 - `openrouter.py` — chat-completions client with OpenAI-style tool loop
 - `transcription.py` — OpenAI-compatible `/audio/transcriptions` client
   with hallucination filtering

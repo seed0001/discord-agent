@@ -75,6 +75,33 @@ class LiveConsolidationTest(unittest.IsolatedAsyncioTestCase):
             self.assertCountEqual(calls, [1, 2])
 
 
+class ChannelTaggingTest(unittest.TestCase):
+    def test_text_turn_formats_with_channel_name(self):
+        line = memory._format_turns([
+            {"speaker": "alice", "text": "posted the invoice", "source": "text", "channel": "general"},
+        ])
+        self.assertEqual(line, "[#general] alice: posted the invoice")
+
+    def test_voice_turn_formats_with_channel_name(self):
+        line = memory._format_turns([
+            {"speaker": "bob", "text": "asked about it", "source": "voice", "channel": "General VC"},
+        ])
+        self.assertEqual(line, "[voice/General VC] bob: asked about it")
+
+    def test_missing_channel_falls_back_to_source_only(self):
+        line = memory._format_turns([
+            {"speaker": "carol", "text": "hi", "source": "text", "channel": ""},
+        ])
+        self.assertEqual(line, "[text] carol: hi")
+
+    def test_record_turn_stores_channel_on_the_buffered_turn(self):
+        memory._turns.clear()
+        memory.record_turn(1, "alice", "posted the invoice", "text", channel="general")
+        turn = memory._turns[1][-1]
+        self.assertEqual(turn["channel"], "general")
+        self.assertEqual(turn["source"], "text")
+
+
 class NoEventLoopTest(unittest.TestCase):
     """record_turn() may run outside an event loop (e.g. at import/shutdown);
     scheduling failure must not permanently wedge future consolidation."""

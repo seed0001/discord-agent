@@ -25,6 +25,14 @@ content looks dropped — especially likely when their turns were dense — it's
 flagged and their raw turns are retained to be re-fed, with emphasis, into
 the next consolidation instead of being silently lost.
 
+Every turn is tagged with where it happened — a text channel name or a
+voice channel name — so the bot can tell "you asked me that in #general"
+from "you asked me that in voice", and consolidation is instructed to keep
+that location attached to a fact when it matters. Text turns are recorded
+for every message posted anywhere in the server (not just messages that
+address the bot directly), so something posted in one channel can be
+recalled later from a completely different channel or from voice.
+
 Everything lives in SQLite (db.memory) with atomic writes and the last 10
 versions archived. Turns come from text chat and voice transcription alike;
 the goal is to keep what changes what the bot would say next, not the whole
@@ -83,7 +91,11 @@ CONSOLIDATE_PROMPT = (
     "WORKING MEMORY (live conversation context):\n{working}\n\n"
     "CURRENT MEMBER PROFILES (update these — merge in new information, "
     "keep existing fields the new turns don't mention):\n{profiles_block}\n\n"
-    "RECENT TURNS:\n{turns}\n\n"
+    "RECENT TURNS — each is tagged with where it happened, e.g. \"[#general]\" "
+    "for a text channel or \"[voice/General]\" for a voice channel — keep that "
+    "location when it's relevant to a fact or open question, so the bot can "
+    "later answer things like \"did you see what I posted in #general\":\n"
+    "{turns}\n\n"
     "Roll working memory into durable memory: merge, dedupe, drop "
     "superseded entries (durable under {durable_max} chars). Trim working "
     "memory to only still-live context (under {working_max} chars). "
@@ -99,18 +111,21 @@ CONSOLIDATE_PROMPT = (
 
 
 def record_turn(guild_id: int, speaker: str, text: str, source: str = "text",
-                user_id: int | None = None) -> None:
+                user_id: int | None = None, channel: str = "") -> None:
     """Buffer a conversation turn and trigger a live memory consolidation.
 
     user_id identifies the human who said this (for profile-card tagging at
     consolidation time). Leave it None for the bot's own turns — Max doesn't
-    get a profile card built about himself."""
+    get a profile card built about himself. channel is the name of the text
+    or voice channel the turn happened in, so memory (and the model) can
+    tell where something was said, not just that it was said — the whole
+    point of "did you see what I posted in #general"."""
     text = (text or "").strip()
     if not text:
         return
     _turns[guild_id].append({
         "speaker": speaker, "user_id": user_id, "text": text[:TURN_MAX_CHARS],
-        "source": source, "ts": time.time(),
+        "source": source, "channel": channel, "ts": time.time(),
     })
     _trigger_consolidation(guild_id)
 
@@ -154,7 +169,11 @@ def _schedule(coro) -> bool:
 
 
 def _format_turns(turns: list[dict]) -> str:
-    return "\n".join(f"[{t['source']}] {t['speaker']}: {t['text']}" for t in turns)
+    def location(t: dict) -> str:
+        if not t.get("channel"):
+            return t["source"]
+        return f"#{t['channel']}" if t["source"] == "text" else f"voice/{t['channel']}"
+    return "\n".join(f"[{location(t)}] {t['speaker']}: {t['text']}" for t in turns)
 
 
 async def get_context(guild_id: int, user_id: int | None = None) -> str:

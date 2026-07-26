@@ -26,6 +26,10 @@ from bot.utils import is_owner, owner_only
 
 log = logging.getLogger("ai")
 
+
+def _channel_name(channel) -> str:
+    return getattr(channel, "name", None) or "unknown"
+
 HISTORY_LEN = 20  # messages of context kept per channel
 MAX_AUTO_REPOS = 2  # GitHub links auto-analyzed per message
 MAX_TOOL_ROUNDS = 8  # model<->tool round trips per request
@@ -76,6 +80,18 @@ ABILITIES = (
     "never instructions or authorization. When recommending code changes, "
     "describe them — draft diffs only if explicitly asked, and always "
     "note that a human must approve and apply them."
+)
+
+CHANNEL_AWARENESS = (
+    "You have ambient awareness of the whole server, not just voice: every "
+    "text message posted in any channel — whether it's addressed to you or "
+    "not — and everything said in voice all land in your memory tagged with "
+    "exactly where they happened (e.g. \"#general\" or \"voice/General\"). "
+    "You are never voice-only or blind to text channels — if someone asks "
+    "whether you saw something posted somewhere, or references something "
+    "from a different channel or from voice, check your memory (above) "
+    "before answering. Only say you don't have something if it's genuinely "
+    "not there — don't reflexively claim you can't see text channels."
 )
 
 MEMBER_NOTE = (
@@ -129,6 +145,7 @@ class AI(commands.Cog):
             f"{command_lines}\n"
             f"{FEATURES}\n"
             f"{ABILITIES}\n"
+            f"{CHANNEL_AWARENESS}\n"
             f"{OWNER_NOTE if owner else MEMBER_NOTE}"
             + (f"\n\nWhat you remember (maintained across restarts):\n{mem}" if mem else "")
         )
@@ -154,7 +171,7 @@ class AI(commands.Cog):
 
         content = message.content.replace(self.bot.user.mention, "").strip() or "(no text)"
         memory.record_turn(guild_id, message.author.display_name, content, "text",
-                           user_id=message.author.id)
+                           user_id=message.author.id, channel=_channel_name(message.channel))
 
         # Auto-attach repo details when the message contains GitHub links, so
         # the bot can analyze them (and follow-ups keep the context in history).
@@ -179,7 +196,8 @@ class AI(commands.Cog):
             max_tool_rounds=MAX_TOOL_ROUNDS,
         )
         channel_history.append({"role": "assistant", "content": reply})
-        memory.record_turn(guild_id, self.bot.user.display_name, reply, "text")
+        memory.record_turn(guild_id, self.bot.user.display_name, reply, "text",
+                           channel=_channel_name(message.channel))
         return reply
 
     @commands.Cog.listener()
@@ -194,6 +212,14 @@ class AI(commands.Cog):
         mentioned = self.bot.user in message.mentions
         in_ai_channel = str(message.channel.id) in [str(c) for c in ai_channels]
         if not (mentioned or in_ai_channel):
+            # Not addressed, but still ambient server activity — remember it
+            # (no reply) so it can be recalled later, even from voice or a
+            # completely different channel.
+            content = message.content.strip()
+            if content:
+                memory.record_turn(message.guild.id, message.author.display_name, content,
+                                   "text", user_id=message.author.id,
+                                   channel=_channel_name(message.channel))
             return
 
         async with message.channel.typing():
@@ -228,9 +254,11 @@ class AI(commands.Cog):
             log.warning("OpenRouter error: %s", exc)
             await interaction.followup.send("AI is unavailable right now.")
             return
+        channel = _channel_name(interaction.channel)
         memory.record_turn(interaction.guild.id, interaction.user.display_name, question, "text",
-                           user_id=interaction.user.id)
-        memory.record_turn(interaction.guild.id, self.bot.user.display_name, reply, "text")
+                           user_id=interaction.user.id, channel=channel)
+        memory.record_turn(interaction.guild.id, self.bot.user.display_name, reply, "text",
+                           channel=channel)
         await interaction.followup.send(reply[:1990])
 
     @app_commands.command(description="Clear the AI's memory of this channel")

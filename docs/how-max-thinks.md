@@ -142,10 +142,13 @@ second timers above.
 
 ## 4. Memory pipeline
 
-Every text message and every transcribed voice utterance — from humans and
-from Max himself — is appended as one line to a rolling in-memory buffer,
-per server, capped at the 60 most recent lines. This step is a pure buffer
-append; no model is involved and nothing is persisted yet.
+Every text message posted anywhere in the server — not just messages that
+mention Max or land in a channel configured for always-on replies — and
+every transcribed voice utterance, from humans and from Max himself, is
+appended as one line to a rolling in-memory buffer, per server, capped at
+the 60 most recent lines. Each line is tagged with exactly where it
+happened: a text channel name or a voice channel name. This step is a
+pure buffer append; no model is involved and nothing is persisted yet.
 
 Every single turn then triggers a live consolidation call: given current
 durable memory, current working memory, current per-member profile cards,
@@ -176,8 +179,11 @@ There's no embedding search, no relevance filtering, no per-topic lookup.
 Durable memory is capped at roughly 5,000 characters and working memory at
 roughly 2,500; once durable memory fills up, the only pressure valve is
 the consolidation step's own summarization/dedup judgment. Memory is
-scoped per server, not per channel or per user, and doesn't distinguish
-whether a fact originated in text or voice once it's written down.
+scoped per server, not per channel or per user — but each turn's channel
+tag flows into the consolidation prompt, and the model is instructed to
+keep that location attached to a fact when it matters, so "you asked me
+that in #general" and "you asked me that in voice" stay distinguishable
+even after facts get folded into the shared durable/working files.
 
 ## 5. Tools
 
