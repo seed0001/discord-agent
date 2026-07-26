@@ -6,12 +6,16 @@ Every turn — text or voice, from any speaker — triggers a background
 consolidation call that rewrites both durable memory (stable, guild-wide
 facts, preferences, and decisions, each dated with a confidence level) and
 working memory (current topic, active speakers, open questions, recent
-exchanges) in one shot from the full recent turn buffer. There's no turn-
-count or time-based batching: something said in text chat is folded into
-memory right away, so it's already there — same as voice — the next time
-anyone talks to the bot in either modality. This used to be throttled to
-save spend on a paid model; now that background calls route through a free
-model pool, there's no reason to batch, so every turn runs it.
+exchanges) in one shot from whatever turns are new since the last
+successful consolidation (a per-guild watermark, not the whole rolling
+buffer — reprocessing everything already folded in on every single turn
+would just make prompts and required output balloon for no benefit).
+There's no turn-count or time-based batching: something said in text chat
+is folded into memory right away, so it's already there — same as voice —
+the next time anyone talks to the bot in either modality. This used to be
+throttled to save spend on a paid model; now that background calls route
+through a free model pool, there's no reason to batch, so every turn runs
+it.
 
 Member profiles: consolidation tags every fact with the member it came from
 or is about (a system instruction baked into the consolidation prompt) and
@@ -73,6 +77,8 @@ _STOPWORDS = {
 _turns: dict[int, deque] = defaultdict(lambda: deque(maxlen=TURN_BUFFER))
 _consolidating: dict[int, bool] = defaultdict(bool)  # a consolidation is in flight
 _pending: dict[int, bool] = defaultdict(bool)        # turns arrived while it was running
+_next_seq: dict[int, int] = defaultdict(int)             # per-guild turn counter
+_last_consolidated_seq: dict[int, int] = defaultdict(int)  # high-water mark already folded in
 
 CONSOLIDATE_PROMPT = (
     "You maintain the memory of a Discord server bot: durable guild-wide "
@@ -123,9 +129,13 @@ def record_turn(guild_id: int, speaker: str, text: str, source: str = "text",
     text = (text or "").strip()
     if not text:
         return
+    # Sequence numbers start at 1 so the "nothing consolidated yet"
+    # watermark of 0 doesn't exclude the very first turn (0 > 0 is False).
+    _next_seq[guild_id] += 1
+    seq = _next_seq[guild_id]
     _turns[guild_id].append({
         "speaker": speaker, "user_id": user_id, "text": text[:TURN_MAX_CHARS],
-        "source": source, "channel": channel, "ts": time.time(),
+        "source": source, "channel": channel, "ts": time.time(), "seq": seq,
     })
     _trigger_consolidation(guild_id)
 
@@ -225,17 +235,24 @@ async def _model(guild_id: int):
 
 
 async def _consolidate(guild_id: int) -> None:
+    # Only what's new since the last successful consolidation — not the
+    # whole rolling buffer. Running every turn already keeps memory live;
+    # reprocessing up to 60 already-folded-in turns on top of that every
+    # single time was pure waste (bigger prompts, bigger required output,
+    # more truncation risk) for no benefit, since durable/working already
+    # carry everything earlier turns contributed.
+    watermark = _last_consolidated_seq[guild_id]
+    new_turns = [t for t in _turns[guild_id] if t["seq"] > watermark]
+    if not new_turns:
+        return
     durable, _ = await db.get_memory(guild_id, "durable")
     working, _ = await db.get_memory(guild_id, "working")
-    turns = list(_turns[guild_id])
-    if not (working or turns):
-        return
 
     # Group this round's turns by member (bot's own turns carry no
     # user_id and are excluded — Max doesn't get profiled).
     by_member: dict[int, list[dict]] = defaultdict(list)
     names: dict[int, str] = {}
-    for t in turns:
+    for t in new_turns:
         if t["user_id"] is None:
             continue
         by_member[t["user_id"]].append(t)
@@ -259,13 +276,17 @@ async def _consolidate(guild_id: int) -> None:
         today=time.strftime("%Y-%m-%d"),
         durable=durable or "(empty)", working=working or "(empty)",
         profiles_block=profiles_block,
-        turns=_format_turns(turns) or "(none)",
+        turns=_format_turns(new_turns) or "(none)",
         durable_max=DURABLE_MAX, working_max=WORKING_MAX,
     )
     try:
+        # Enough headroom to actually reproduce durable_max + working_max
+        # chars plus profile JSON without getting cut off mid-object —
+        # 2500 was routinely too tight and produced truncated, unparseable
+        # JSON, silently dropping updates.
         reply = await openrouter.chat(
             [{"role": "user", "content": prompt}],
-            model=await _model(guild_id), temperature=0.2, max_tokens=2500,
+            model=await _model(guild_id), temperature=0.2, max_tokens=4096,
             background=True,
         )
     except openrouter.OpenRouterError as exc:
@@ -277,6 +298,7 @@ async def _consolidate(guild_id: int) -> None:
         log.warning("Consolidation reply unparseable; keeping files as-is")
         return
     new_durable, new_working, profile_updates = parsed
+    _last_consolidated_seq[guild_id] = new_turns[-1]["seq"]
 
     await db.set_memory(guild_id, "durable", new_durable[:DURABLE_MAX + 1000])
     await db.set_memory(guild_id, "working", new_working[:WORKING_MAX + 500])
