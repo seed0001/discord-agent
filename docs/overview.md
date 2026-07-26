@@ -41,6 +41,11 @@ you in voice on Tuesday; he'll know it in text chat on Friday.
 drop a repo link and he'll pull its stats, languages, and README and
 actually discuss it.
 
+**Reads what you hand him.** Attach a document to a message he sees — a
+text file, markdown, code, a PDF, a Word doc — and he reads it
+automatically, no command needed. Summarize it, answer questions about it,
+review it: he engages with the actual content, not just the filename.
+
 ## How you run him
 
 A mobile-friendly web dashboard covers everything: member management,

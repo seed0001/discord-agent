@@ -17,6 +17,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
+import documents
 import memory
 import openrouter
 import tools
@@ -61,6 +62,11 @@ ABILITIES = (
     "with people in chat: read the diff, explain what changed and why it "
     "matters, flag concerns, suggest improvements — a real code review "
     "conversation, not a summary.\n"
+    "You can also review documents: when someone attaches a file to their "
+    "message — text, markdown, code, a PDF, or a Word doc — its content is "
+    "pulled in and attached below their message automatically. Read it and "
+    "actually engage with it (summarize, answer questions, find issues), "
+    "don't just acknowledge it's there. "
     "You cannot change, run, deploy, or merge anything — there is no write "
     "path in any of these tools. Merging a reviewed change is always a "
     "human call: the repo owner decides, or the contributor merges their "
@@ -155,6 +161,10 @@ class AI(commands.Cog):
         for repo_owner, name in tools.find_repo_refs(content)[:MAX_AUTO_REPOS]:
             info = await tools.run_tool("github_repo", {"repo": f"{repo_owner}/{name}"})
             content += f"\n\n[attached context for github.com/{repo_owner}/{name}]\n{info}"
+
+        attachment_context = await documents.build_attachment_context(message)
+        if attachment_context:
+            content += f"\n\n{attachment_context}"
 
         channel_history.append({"role": "user", "content": f"{message.author.display_name}: {content}"})
 

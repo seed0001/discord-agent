@@ -71,6 +71,8 @@ its lineage (adapted from seed0001/digital-pressure) and
   with hallucination filtering
 - `tts.py` — Fish Audio (S1/S2 tag styles) with edge-tts fallback
 - `tools.py` — web_search + github_repo tools
+- `documents.py` — extracts text from message attachments (txt/md/code,
+  PDF, docx) so the AI can review dropped-in files
 - `logbuffer.py` — ring buffer feeding the dashboard Logs tab
 
 ## Data flow: a voice utterance, end to end

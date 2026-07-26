@@ -25,6 +25,10 @@ tools, wake pipeline, prompts, models, limitations, roadmap)
   and file contents at any ref, for reviewing contributor work together
   in chat. Merging is always a human decision — the bot has no write path
   to GitHub at all.
+- Document review: drop a file on a message that mentions the bot (or in
+  an always-on AI channel) — text, markdown, code, PDFs, and Word docs are
+  read automatically and folded into the conversation so the bot can
+  summarize, answer questions about, or review what's in them.
 - Proactive speech: a pressure engine (`pressure/`, adapted from
   digital-pressure) lets the bot speak unprompted — messages and voice
   transcripts are classified into weighted signals (blockers, wrong claims,
