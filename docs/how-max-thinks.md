@@ -132,10 +132,8 @@ every voice utterance arrives as a discrete event and is handled inline.
 The only two things that run on a timer are the pressure engine's tick
 (every 30 seconds: decay, the small cross-bucket pressure flow, expiry
 checks, and "is anything now over threshold") and the liveness watchdog's
-health check (every 30 seconds). Memory maintenance looks timer-like but
-isn't — it's triggered by turn *count* crossing a threshold, gated by a
-minimum wall-clock gap so a burst of rapid voice chat can't fire it every
-few seconds; it behaves like a debounced event, not a schedule.
+health check (every 30 seconds). Memory maintenance runs on every single
+turn, not a timer or a threshold — see the pipeline below.
 
 The concrete event list: message received, voice utterance received (from
 Node, over HTTP), voice channel joined/left (from Node), slash command
@@ -149,26 +147,26 @@ from Max himself — is appended as one line to a rolling in-memory buffer,
 per server, capped at the 60 most recent lines. This step is a pure buffer
 append; no model is involved and nothing is persisted yet.
 
-Every 12th turn, provided at least two minutes have passed since the last
-update (the debounce mentioned above), a background model call fires: it's
-given the current working-memory text and the last 30 buffered turns, and
-asked to rewrite working memory — current topic, active speakers, open
-questions, recent meaningful exchanges, paraphrased and attributed,
-explicitly instructed to drop filler and pleasantries. The result replaces
-working memory in the database; the previous version is archived (up to
-ten versions kept per file). A cheap sanity check rejects obviously broken
-output — too short, no real structure — before it's allowed to overwrite
-anything.
-
-Every 80th turn, a larger consolidation call runs: given current durable
-memory, current working memory, and the raw recent turns, the model merges
-new stable facts, preferences, and decisions into durable memory (each
-entry dated and tagged with a confidence level), deduplicates, drops
-anything superseded, and separately trims working memory down to just
-what's still live. Both files come back in one response; if that response
-can't be parsed as valid structured output, nothing is overwritten — a bad
-model response leaves the previous memory intact rather than corrupting
-it.
+Every single turn then triggers a live consolidation call: given current
+durable memory, current working memory, current per-member profile cards,
+and the raw recent turns, the model merges new stable facts, preferences,
+and decisions into durable memory (each entry dated and tagged with a
+confidence level), deduplicates, drops anything superseded, and separately
+rewrites working memory — current topic, active speakers, open questions,
+recent meaningful exchanges, paraphrased and attributed — down to just
+what's still live. Both files (plus any profile updates) come back in one
+response; if that response can't be parsed as valid structured output,
+nothing is overwritten — a bad model response leaves the previous memory
+intact rather than corrupting it. There's no turn-count threshold and no
+wall-clock debounce: this used to be batched (every 12th turn for working
+memory, every 80th for durable) to bound spend on a paid model; now that
+these background calls route through a free model pool, batching only
+costs latency for no savings, so it runs every time instead. To avoid
+piling up overlapping calls when turns arrive faster than the model
+responds — a burst of rapid voice chatter, say — a per-guild in-flight
+flag coalesces them: turns that land mid-run just mark that fresher
+content arrived, and the in-flight run loops once more for it immediately
+after finishing, rather than queuing a redundant call per turn.
 
 Retrieval has no ranking step at all: every reply-generating call anywhere
 in the system — a mention reply, a direct question, a wake-word response,

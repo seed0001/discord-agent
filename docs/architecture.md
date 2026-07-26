@@ -64,8 +64,8 @@ its lineage (adapted from seed0001/digital-pressure) and
 `pressure/README.md` for the model.
 
 ### Cross-cutting organs
-- `memory.py` — two-tier persistent memory (working refreshed every 5
-  turns, durable consolidated every ~45), injected into every prompt
+- `memory.py` — two-tier persistent memory (working + durable), both
+  consolidated live after every turn, injected into every prompt
 - `openrouter.py` — chat-completions client with OpenAI-style tool loop
 - `transcription.py` — OpenAI-compatible `/audio/transcriptions` client
   with hallucination filtering

@@ -36,11 +36,13 @@ tools, wake pipeline, prompts, models, limitations, roadmap)
   flows, and a deterministic gate (thresholds, relevance, novelty,
   cooldowns, budgets, energy) rules on every drafted contribution —
   `/pressure` shows state or toggles it (owner)
-- Persistent two-tier memory: a working-memory file (current topic, open
-  questions, recent meaningful turns; refreshed every 5 turns) rolls into a
-  durable-memory file (dated facts/preferences/decisions with confidence)
-  every ~45 turns — fed by text chat and voice alike, stored versioned in
-  SQLite, injected into every reply; `/memory` shows or wipes it (owner)
+- Persistent memory, updated live: a working-memory file (current topic,
+  open questions, recent meaningful turns) and a durable-memory file (dated
+  facts/preferences/decisions with confidence) are both rewritten after
+  every single turn — text or voice, from anyone — so something said in
+  chat is already in memory the next time anyone talks to the bot, in
+  either modality, no batching delay; stored versioned in SQLite, injected
+  into every reply; `/memory` shows or wipes it (owner)
 - Voice monitoring (hybrid): a Node.js sidecar (`listener/`) joins occupied
   voice channels — it speaks Discord's DAVE E2EE voice protocol via
   discord.js, which Python libraries don't support yet — receives each

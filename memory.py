@@ -1,16 +1,17 @@
-"""Two-tier persistent memory for the AI, per guild — plus per-member
-profile cards so a specific person's context doesn't get lost inside the
-general guild-wide dump.
+"""Live persistent memory for the AI, per guild — plus per-member profile
+cards so a specific person's context doesn't get lost inside the general
+guild-wide dump.
 
-Working memory: current topic, active speakers, decisions in play, open
-questions, and the last 10-15 meaningful turns. Refreshed by the model every
-WORKING_EVERY turns from the recent turn buffer.
-
-Durable memory: stable, guild-wide facts, preferences, project details, and
-resolved decisions — each entry dated with a confidence level. Working
-memory rolls into it every CONSOLIDATE_EVERY turns (deduped, superseded
-entries dropped), after which the working file is trimmed to just the live
-context.
+Every turn — text or voice, from any speaker — triggers a background
+consolidation call that rewrites both durable memory (stable, guild-wide
+facts, preferences, and decisions, each dated with a confidence level) and
+working memory (current topic, active speakers, open questions, recent
+exchanges) in one shot from the full recent turn buffer. There's no turn-
+count or time-based batching: something said in text chat is folded into
+memory right away, so it's already there — same as voice — the next time
+anyone talks to the bot in either modality. This used to be throttled to
+save spend on a paid model; now that background calls route through a free
+model pool, there's no reason to batch, so every turn runs it.
 
 Member profiles: consolidation tags every fact with the member it came from
 or is about (a system instruction baked into the consolidation prompt) and
@@ -41,11 +42,7 @@ import openrouter
 
 log = logging.getLogger("memory")
 
-WORKING_EVERY = 12       # turns between working-memory refreshes
-CONSOLIDATE_EVERY = 25   # turns between working -> durable rollups
-MIN_UPDATE_GAP_S = 120   # never refresh working memory more often than this
-TURN_BUFFER = 60         # raw turns kept per guild for the updater to read
-TURNS_FED = 30           # most recent turns actually sent to the model
+TURN_BUFFER = 60         # raw turns kept per guild for consolidation to read
 TURN_MAX_CHARS = 300     # per-turn cap fed to the updater
 WORKING_MAX = 2500       # char caps requested from the model
 DURABLE_MAX = 5000
@@ -66,22 +63,8 @@ _STOPWORDS = {
 }
 
 _turns: dict[int, deque] = defaultdict(lambda: deque(maxlen=TURN_BUFFER))
-_counts: dict[int, int] = defaultdict(int)
-_since_rollup: dict[int, int] = defaultdict(int)
-_last_update: dict[int, float] = defaultdict(float)
-_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
-
-WORKING_PROMPT = (
-    "You maintain the WORKING MEMORY file of a Discord server bot. It holds: "
-    "current topic, active speakers, decisions in play, open questions, and "
-    "the last 10-15 meaningful turns (paraphrased, attributed). Skip "
-    "pleasantries, filler, and transcription noise — preserve what would "
-    "change what the bot says next.\n\n"
-    "CURRENT WORKING MEMORY:\n{working}\n\n"
-    "RECENT TURNS (text and voice):\n{turns}\n\n"
-    "Rewrite the working memory file incorporating the recent turns. Keep it "
-    "under {max_chars} characters. Output ONLY the file content, no preamble."
-)
+_consolidating: dict[int, bool] = defaultdict(bool)  # a consolidation is in flight
+_pending: dict[int, bool] = defaultdict(bool)        # turns arrived while it was running
 
 CONSOLIDATE_PROMPT = (
     "You maintain the memory of a Discord server bot: durable guild-wide "
@@ -117,7 +100,7 @@ CONSOLIDATE_PROMPT = (
 
 def record_turn(guild_id: int, speaker: str, text: str, source: str = "text",
                 user_id: int | None = None) -> None:
-    """Buffer a conversation turn and schedule memory maintenance.
+    """Buffer a conversation turn and trigger a live memory consolidation.
 
     user_id identifies the human who said this (for profile-card tagging at
     consolidation time). Leave it None for the bot's own turns — Max doesn't
@@ -129,19 +112,34 @@ def record_turn(guild_id: int, speaker: str, text: str, source: str = "text",
         "speaker": speaker, "user_id": user_id, "text": text[:TURN_MAX_CHARS],
         "source": source, "ts": time.time(),
     })
-    _counts[guild_id] += 1
-    _since_rollup[guild_id] += 1
-    if _since_rollup[guild_id] >= CONSOLIDATE_EVERY:
-        _since_rollup[guild_id] = 0
-        _schedule(_consolidate(guild_id))
-    elif _counts[guild_id] % WORKING_EVERY == 0:
-        # time gate on top of the turn counter: rapid voice chat shouldn't
-        # trigger a model call every few seconds
-        if time.time() - _last_update[guild_id] >= MIN_UPDATE_GAP_S:
-            _schedule(_update_working(guild_id))
+    _trigger_consolidation(guild_id)
 
 
-def _schedule(coro) -> None:
+def _trigger_consolidation(guild_id: int) -> None:
+    """Run consolidation for every turn (it's live now, not batched) — but
+    coalesce instead of piling up overlapping calls: if one is already in
+    flight for this guild, just flag that fresher turns arrived, and the
+    in-flight run loops once more for them right after it finishes."""
+    if _consolidating[guild_id]:
+        _pending[guild_id] = True
+        return
+    _consolidating[guild_id] = True
+    if not _schedule(_consolidate_loop(guild_id)):
+        _consolidating[guild_id] = False  # couldn't schedule; don't wedge future turns
+
+
+async def _consolidate_loop(guild_id: int) -> None:
+    try:
+        while True:
+            _pending[guild_id] = False
+            await _consolidate(guild_id)
+            if not _pending[guild_id]:
+                return
+    finally:
+        _consolidating[guild_id] = False
+
+
+def _schedule(coro) -> bool:
     async def runner():
         try:
             await coro
@@ -149,8 +147,10 @@ def _schedule(coro) -> None:
             log.exception("Memory maintenance failed")
     try:
         asyncio.get_running_loop().create_task(runner())
+        return True
     except RuntimeError:
-        pass  # no loop (tests); maintenance just skips
+        coro.close()  # no loop (tests); maintenance just skips
+        return False
 
 
 def _format_turns(turns: list[dict]) -> str:
@@ -205,118 +205,89 @@ async def _model(guild_id: int):
     return await db.get_setting(guild_id, "ai_utility_model")
 
 
-async def _update_working(guild_id: int) -> None:
-    async with _locks[guild_id]:
-        _last_update[guild_id] = time.time()
-        turns = _format_turns(list(_turns[guild_id])[-TURNS_FED:])
-        if not turns:
-            return
-        working, _ = await db.get_memory(guild_id, "working")
-        prompt = WORKING_PROMPT.format(
-            working=working or "(empty)", turns=turns, max_chars=WORKING_MAX)
-        try:
-            updated = await openrouter.chat(
-                [{"role": "user", "content": prompt}],
-                model=await _model(guild_id), temperature=0.2, max_tokens=1200,
-                background=True,
-            )
-        except openrouter.OpenRouterError as exc:
-            log.warning("Working-memory update failed: %s", exc)
-            return
-        updated = updated.strip()
-        # Free-pool models occasionally return junk (e.g. a bare safety
-        # verdict) — never let that overwrite real memory
-        if len(updated) < 40 or "\n" not in updated and len(updated) < 80:
-            log.warning("Working-memory update rejected as junk: %r", updated[:80])
-            return
-        await db.set_memory(guild_id, "working", updated[:WORKING_MAX + 500])
-        log.info("Working memory updated for guild %s", guild_id)
-
-
 async def _consolidate(guild_id: int) -> None:
-    async with _locks[guild_id]:
-        durable, _ = await db.get_memory(guild_id, "durable")
-        working, _ = await db.get_memory(guild_id, "working")
-        turns = list(_turns[guild_id])
-        if not (working or turns):
-            return
+    durable, _ = await db.get_memory(guild_id, "durable")
+    working, _ = await db.get_memory(guild_id, "working")
+    turns = list(_turns[guild_id])
+    if not (working or turns):
+        return
 
-        # Group this round's turns by member (bot's own turns carry no
-        # user_id and are excluded — Max doesn't get profiled).
-        by_member: dict[int, list[dict]] = defaultdict(list)
-        names: dict[int, str] = {}
-        for t in turns:
-            if t["user_id"] is None:
-                continue
-            by_member[t["user_id"]].append(t)
-            names[t["user_id"]] = t["speaker"]  # latest display name wins
+    # Group this round's turns by member (bot's own turns carry no
+    # user_id and are excluded — Max doesn't get profiled).
+    by_member: dict[int, list[dict]] = defaultdict(list)
+    names: dict[int, str] = {}
+    for t in turns:
+        if t["user_id"] is None:
+            continue
+        by_member[t["user_id"]].append(t)
+        names[t["user_id"]] = t["speaker"]  # latest display name wins
 
-        pending_by_member: dict[int, str] = {}
-        profile_lines = []
-        for uid, name in names.items():
-            existing = await _load_profile(guild_id, uid)
-            pending, _ = await db.get_memory(guild_id, f"pending:{uid}")
-            if pending:
-                pending_by_member[uid] = pending
-            line = f"{name}: {json.dumps(existing) if existing else '(no card yet)'}"
-            if pending:
-                line += (f"\n  [NOTE: facts about {name} were dropped in a prior "
-                        f"pass — make sure these are captured this time: {pending}]")
-            profile_lines.append(line)
-        profiles_block = "\n".join(profile_lines) or "(no members with new activity this round)"
+    pending_by_member: dict[int, str] = {}
+    profile_lines = []
+    for uid, name in names.items():
+        existing = await _load_profile(guild_id, uid)
+        pending, _ = await db.get_memory(guild_id, f"pending:{uid}")
+        if pending:
+            pending_by_member[uid] = pending
+        line = f"{name}: {json.dumps(existing) if existing else '(no card yet)'}"
+        if pending:
+            line += (f"\n  [NOTE: facts about {name} were dropped in a prior "
+                    f"pass — make sure these are captured this time: {pending}]")
+        profile_lines.append(line)
+    profiles_block = "\n".join(profile_lines) or "(no members with new activity this round)"
 
-        prompt = CONSOLIDATE_PROMPT.format(
-            today=time.strftime("%Y-%m-%d"),
-            durable=durable or "(empty)", working=working or "(empty)",
-            profiles_block=profiles_block,
-            turns=_format_turns(turns) or "(none)",
-            durable_max=DURABLE_MAX, working_max=WORKING_MAX,
+    prompt = CONSOLIDATE_PROMPT.format(
+        today=time.strftime("%Y-%m-%d"),
+        durable=durable or "(empty)", working=working or "(empty)",
+        profiles_block=profiles_block,
+        turns=_format_turns(turns) or "(none)",
+        durable_max=DURABLE_MAX, working_max=WORKING_MAX,
+    )
+    try:
+        reply = await openrouter.chat(
+            [{"role": "user", "content": prompt}],
+            model=await _model(guild_id), temperature=0.2, max_tokens=2500,
+            background=True,
         )
-        try:
-            reply = await openrouter.chat(
-                [{"role": "user", "content": prompt}],
-                model=await _model(guild_id), temperature=0.2, max_tokens=2500,
-                background=True,
-            )
-        except openrouter.OpenRouterError as exc:
-            log.warning("Memory consolidation failed: %s", exc)
-            return
+    except openrouter.OpenRouterError as exc:
+        log.warning("Memory consolidation failed: %s", exc)
+        return
 
-        parsed = _parse_consolidation(reply)
-        if parsed is None:
-            log.warning("Consolidation reply unparseable; keeping files as-is")
-            return
-        new_durable, new_working, profile_updates = parsed
+    parsed = _parse_consolidation(reply)
+    if parsed is None:
+        log.warning("Consolidation reply unparseable; keeping files as-is")
+        return
+    new_durable, new_working, profile_updates = parsed
 
-        await db.set_memory(guild_id, "durable", new_durable[:DURABLE_MAX + 1000])
-        await db.set_memory(guild_id, "working", new_working[:WORKING_MAX + 500])
+    await db.set_memory(guild_id, "durable", new_durable[:DURABLE_MAX + 1000])
+    await db.set_memory(guild_id, "working", new_working[:WORKING_MAX + 500])
 
-        updated_by_name = {str(k).strip().lower(): v for k, v in profile_updates.items()
-                           if isinstance(v, dict)}
+    updated_by_name = {str(k).strip().lower(): v for k, v in profile_updates.items()
+                       if isinstance(v, dict)}
 
-        for uid, member_turns in by_member.items():
-            name = names[uid]
-            raw_text = "\n".join(t["text"] for t in member_turns)
-            if uid in pending_by_member:
-                raw_text = pending_by_member[uid] + "\n" + raw_text
-            new_fields = updated_by_name.get(name.strip().lower())
+    for uid, member_turns in by_member.items():
+        name = names[uid]
+        raw_text = "\n".join(t["text"] for t in member_turns)
+        if uid in pending_by_member:
+            raw_text = pending_by_member[uid] + "\n" + raw_text
+        new_fields = updated_by_name.get(name.strip().lower())
 
-            substantial = len(raw_text) >= DROP_CHECK_MIN_CHARS
-            ratio = _preservation_ratio(raw_text, json.dumps(new_fields) if new_fields else "")
-            if substantial and ratio < DROP_PRESERVATION_MIN:
-                log.warning(
-                    "consolidation may have dropped %s's facts (preservation "
-                    "%.0f%%, %d raw chars) — flagging and retaining raw turns "
-                    "for the next pass", name, ratio * 100, len(raw_text))
-                await db.set_memory(guild_id, f"pending:{uid}", raw_text[-PENDING_MAX:])
-            elif uid in pending_by_member:
-                await db.set_memory(guild_id, f"pending:{uid}", "")  # captured now
+        substantial = len(raw_text) >= DROP_CHECK_MIN_CHARS
+        ratio = _preservation_ratio(raw_text, json.dumps(new_fields) if new_fields else "")
+        if substantial and ratio < DROP_PRESERVATION_MIN:
+            log.warning(
+                "consolidation may have dropped %s's facts (preservation "
+                "%.0f%%, %d raw chars) — flagging and retaining raw turns "
+                "for the next pass", name, ratio * 100, len(raw_text))
+            await db.set_memory(guild_id, f"pending:{uid}", raw_text[-PENDING_MAX:])
+        elif uid in pending_by_member:
+            await db.set_memory(guild_id, f"pending:{uid}", "")  # captured now
 
-            if new_fields:
-                await _save_profile(guild_id, uid, name, new_fields)
+        if new_fields:
+            await _save_profile(guild_id, uid, name, new_fields)
 
-        log.info("Memory consolidated for guild %s (%d member(s) active this round)",
-                 guild_id, len(by_member))
+    log.info("Memory consolidated for guild %s (%d member(s) active this round)",
+             guild_id, len(by_member))
 
 
 async def _save_profile(guild_id: int, user_id: int, name: str, fields: dict) -> None:
