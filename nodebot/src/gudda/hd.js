@@ -321,14 +321,41 @@ function thresholdCounts(counts, dim, n) {
 }
 
 /**
- * Encode text as a binary hypervector via position-shifted n-grams.
+ * Encode text as a binary hypervector by bundling its n-grams.
  *
- * Each n-gram window becomes a deterministic vector, shifted by its offset so
- * ordering carries information, and all of them are bundled by majority.
- * Counts accumulate in one pass rather than materializing every window's
- * vector, which is what makes this affordable at dim=10000.
+ * Each n-gram window becomes a deterministic vector and all of them are
+ * bundled by majority. Counts accumulate in one pass rather than materializing
+ * every window's vector, which is what makes this affordable at dim=10000.
+ *
+ * ## `positional` — why it defaults to false
+ *
+ * The Python permuted each n-gram's vector by its **absolute offset in the
+ * string** before bundling. That is the one place this port deliberately
+ * diverges, because it destroys the property the whole memory layer is built
+ * on. Permuting by position means "sqlite" at offset 40 and "sqlite" at offset
+ * 12 are unrelated vectors, so two messages about the same thing share almost
+ * nothing unless they happen to be aligned character-for-character. Measured on
+ * real phrasing:
+ *
+ *              same topic    different topic
+ *   positional    0.5057         0.5220        ← no signal; noise around 0.5
+ *   bundled       0.7679         0.5110        ← real signal
+ *
+ * With `positional` on, the encoder is only a near-duplicate detector. It is
+ * still a very good one, and it stays reachable — near-identical text scores
+ * ~0.95–1.0 either way, so switching the default costs nothing there.
+ *
+ * Ordering information is not lost by dropping it: the n-gram *is* the local
+ * order, since "sql" is hashed as a unit distinct from "qls". What goes is only
+ * sensitivity to where in the string that n-gram happened to fall, which was
+ * never information anyone wanted.
+ *
+ * Pass `positional: true` to reproduce the Python bit-for-bit — the parity
+ * tests do exactly that, so the port stays verified against the original.
  */
-export function encodeText(text, dim = DEFAULT_DIM, { ngram = 3, stride = 1, charLevel = true } = {}) {
+export function encodeText(text, dim = DEFAULT_DIM, {
+  ngram = 3, stride = 1, charLevel = true, positional = false,
+} = {}) {
   if (!text) return BinaryHDVector.zeros(dim);
 
   // Array.from, not a plain slice: Python indexes a str by code point, so an
@@ -342,8 +369,8 @@ export function encodeText(text, dim = DEFAULT_DIM, { ngram = 3, stride = 1, cha
   let n = 0;
   for (let i = 0; i < limit; i += stride) {
     const window = tokens.slice(i, i + ngram).join(charLevel ? '' : ' ');
-    const vec = BinaryHDVector.fromKey(window, dim).permute(i);
-    accumulateBits(counts, vec, dim);
+    const base = BinaryHDVector.fromKey(window, dim);
+    accumulateBits(counts, positional ? base.permute(i) : base, dim);
     n += 1;
   }
 
@@ -357,14 +384,42 @@ export function encodeText(text, dim = DEFAULT_DIM, { ngram = 3, stride = 1, cha
  *   turn = (role"speaker" ⊛ speaker) ⊕ (role"text" ⊛ encodeText(text))
  *        ⊕ (role"time" ⊛ timestamp)  ⊕ (role"source" ⊛ source)
  */
-export function encodeTurn(speaker, text, timestamp, source, dim = DEFAULT_DIM) {
+export function encodeTurn(speaker, text, timestamp, source, dim = DEFAULT_DIM, opts = {}) {
+  const { timeBucketSec = DEFAULT_TIME_BUCKET_SEC } = opts;
   const bound = [
     BinaryHDVector.fromKey('speaker', dim).bind(BinaryHDVector.fromKey(speaker, dim)),
-    BinaryHDVector.fromKey('text', dim).bind(encodeText(text, dim)),
-    BinaryHDVector.fromKey('time', dim).bind(BinaryHDVector.fromKey(formatTimestamp(timestamp), dim)),
+    BinaryHDVector.fromKey('text', dim).bind(encodeText(text, dim, opts)),
+    BinaryHDVector.fromKey('time', dim).bind(
+      BinaryHDVector.fromKey(bucketTimestamp(timestamp, timeBucketSec), dim),
+    ),
     BinaryHDVector.fromKey('source', dim).bind(BinaryHDVector.fromKey(source, dim)),
   ];
   return bundleAll(bound, dim);
+}
+
+/**
+ * Turns are bucketed to the hour before their timestamp is bound in.
+ *
+ * The Python bound `str(timestamp)` — a float unique to the millisecond — so
+ * every turn's time component was a fresh random vector that no two turns could
+ * ever share. Binding time is meant to place a turn in a period, which is what
+ * a bucket expresses and an exact float cannot.
+ *
+ * Be honest about the size of the win: it is small. Two turns by the *same*
+ * speaker separate 0.0423 → 0.1038, but with different speakers, which is the
+ * normal case, it is only 0.0363 → 0.0384. The reason is structural and is not
+ * something this option can fix — see the note on `encodeTurn` weighting in
+ * CHECKLIST.md. This is kept because binding a unique-per-turn random component
+ * is wrong on its own terms, not because it rescues turn-level retrieval.
+ *
+ * Pass `timeBucketSec: 0` for the Python's literal behaviour; the parity tests
+ * do exactly that.
+ */
+export const DEFAULT_TIME_BUCKET_SEC = 3600;
+
+function bucketTimestamp(ts, bucketSec) {
+  if (!bucketSec) return formatTimestamp(ts);
+  return `b${Math.floor(Number(ts) / bucketSec)}`;
 }
 
 /**

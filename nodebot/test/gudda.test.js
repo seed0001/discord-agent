@@ -121,19 +121,32 @@ test('bundleAll is bit-exact with Python for odd and even counts', () => {
   assert.equal(bits(bundleAll(even, D)), PARITY.bundleAllEven);
 });
 
-test('encodeText is bit-exact with Python, including surrogate pairs', () => {
+// The two encoders deliberately diverge from the Python by default (see hd.js).
+// LEGACY reproduces the original exactly, so the port stays verified against it.
+const LEGACY = { positional: true, timeBucketSec: 0 };
+
+test('encodeText reproduces Python bit-for-bit in legacy mode', () => {
   for (const [text, want] of Object.entries(PARITY.encodeText)) {
-    assert.equal(bits(encodeText(text, D)), want, `text ${JSON.stringify(text.slice(0, 30))}`);
+    assert.equal(bits(encodeText(text, D, LEGACY)), want, `text ${JSON.stringify(text.slice(0, 30))}`);
   }
 });
 
-test('encodeTurn is bit-exact with Python', () => {
-  assert.equal(bits(encodeTurn('jordan', 'deploy is failing', 1.0, 'text', D)),
+test('encodeTurn reproduces Python bit-for-bit in legacy mode', () => {
+  assert.equal(bits(encodeTurn('jordan', 'deploy is failing', 1.0, 'text', D, LEGACY)),
     PARITY.encodeTurn.int_ts);
-  assert.equal(bits(encodeTurn('priya', 'voice line', 1234.5, 'voice', D)),
+  assert.equal(bits(encodeTurn('priya', 'voice line', 1234.5, 'voice', D, LEGACY)),
     PARITY.encodeTurn.float_ts);
-  assert.equal(bits(encodeTurn('max', '', 2.0, 'text', D)),
+  assert.equal(bits(encodeTurn('max', '', 2.0, 'text', D, LEGACY)),
     PARITY.encodeTurn.empty_text);
+});
+
+test('the default encoders diverge from the Python, on purpose', () => {
+  // If these ever match again, someone has reverted the encoder fixes and
+  // topical similarity has silently gone back to being noise.
+  assert.notEqual(bits(encodeText('the deploy is broken again', D)),
+    PARITY.encodeText['the deploy is broken again']);
+  assert.notEqual(bits(encodeTurn('jordan', 'deploy is failing', 1.0, 'text', D)),
+    PARITY.encodeTurn.int_ts);
 });
 
 test('MAP operations are bit-exact with Python', () => {
@@ -230,15 +243,20 @@ test('encodeText is deterministic, order-sensitive, and empty-safe', () => {
 test('encodeTurn separates turns that differ in any single role', () => {
   const base = encodeTurn('jordan', 'the build broke', 100, 'text', D);
   const others = [
-    encodeTurn('priya', 'the build broke', 100, 'text', D),
-    encodeTurn('jordan', 'the build is fine', 100, 'text', D),
-    encodeTurn('jordan', 'the build broke', 101, 'text', D),
-    encodeTurn('jordan', 'the build broke', 100, 'voice', D),
+    encodeTurn('priya', 'the build broke', 100, 'text', D),          // speaker
+    encodeTurn('jordan', 'the build is fine', 100, 'text', D),       // text
+    encodeTurn('jordan', 'the build broke', 100 + 7200, 'text', D),  // time, 2h later
+    encodeTurn('jordan', 'the build broke', 100, 'voice', D),        // source
   ];
   for (const other of others) {
     assert.ok(base.xnorPopcountSimilarity(other) < 1.0);
   }
   assert.equal(base.xnorPopcountSimilarity(encodeTurn('jordan', 'the build broke', 100, 'text', D)), 1.0);
+
+  // Timestamps inside the same bucket are the same turn now — that is the
+  // point of bucketing, and it is what lets two turns share a time component
+  // at all. Use `timeBucketSec: 0` if you need the old per-millisecond split.
+  assert.equal(bits(encodeTurn('jordan', 'the build broke', 101, 'text', D)), bits(base));
 });
 
 test('MAP cosine similarity is clamped and signed', () => {
@@ -485,6 +503,85 @@ test('CALIBRATION: the sentinel flags ordinary traffic as anomalous', () => {
     const r = steady.observe('MESSAGE_BURST', { channel_id: '5', rate: '0.50', window_seconds: '10' });
     assert.equal(r.verdict, 'ALLOW');
   }
+});
+
+test('encodeText separates same-topic from different-topic text', () => {
+  // The reason the positional permute was dropped. These margins are what
+  // makes the encoder usable for anything beyond exact matching; if this
+  // regresses, similarity has gone back to being noise around 0.5.
+  const dim = 10000;
+  const base = 'the railway deploy keeps failing on a node sqlite error';
+  const sim = (a, b, opts) => encodeText(a, dim, opts).xnorPopcountSimilarity(encodeText(b, dim, opts));
+
+  const same = sim(base, 'railway deploy failing again with a node sqlite error');
+  const diff = sim(base, 'anyone want to grab lunch, I am thinking tacos');
+  assert.ok(same > 0.7, `same-topic similarity should be high, got ${same}`);
+  assert.ok(diff < 0.6, `different-topic similarity should be near noise, got ${diff}`);
+  assert.ok(same - diff > 0.15, `expected clear separation, got ${(same - diff).toFixed(4)}`);
+
+  // Legacy mode is the behaviour that motivated the change: no separation.
+  const lSame = sim(base, 'railway deploy failing again with a node sqlite error', LEGACY);
+  const lDiff = sim(base, 'anyone want to grab lunch, I am thinking tacos', LEGACY);
+  assert.ok(Math.abs(lSame - lDiff) < 0.05, 'legacy mode should show no topical signal');
+});
+
+test('encodeText still detects near-duplicates after the fix', () => {
+  // Copypasta detection is what the encoder was actually good at, and the
+  // change must not have cost it.
+  const dim = 10000;
+  const spam = 'FREE NITRO CLICK HERE discord-nitro-gift.com claim now limited offer';
+  const sim = (a, b) => encodeText(a, dim).xnorPopcountSimilarity(encodeText(b, dim));
+  assert.equal(sim(spam, spam), 1.0);
+  assert.ok(sim(spam, `${spam}!`) > 0.9, 'a one-character edit should stay near-identical');
+  assert.ok(sim(spam, 'hey has anyone seen the deploy logs') < 0.6);
+});
+
+test('encodeText keeps some order sensitivity', () => {
+  // Dropping the positional permute must not make it a pure unordered bag —
+  // the n-gram itself still carries local order.
+  const dim = 10000;
+  const a = encodeText('hello world', dim);
+  const b = encodeText('world hello', dim);
+  assert.notEqual(bits(a), bits(b));
+  assert.ok(a.xnorPopcountSimilarity(b) < 0.95);
+});
+
+test('encodeTurn buckets timestamps so turns can share a time component', () => {
+  const dim = 1024;
+  // Same hour → identical time component; an hour apart → different.
+  const within = encodeTurn('a', 'x', 1700000000, 'text', dim);
+  const alsoWithin = encodeTurn('a', 'x', 1700000000 + 900, 'text', dim);
+  const later = encodeTurn('a', 'x', 1700000000 + 7200, 'text', dim);
+  assert.equal(bits(within), bits(alsoWithin), 'same bucket should encode identically');
+  assert.notEqual(bits(within), bits(later));
+  // timeBucketSec: 0 restores the Python's unique-per-turn behaviour.
+  assert.notEqual(
+    bits(encodeTurn('a', 'x', 1700000000, 'text', dim, { timeBucketSec: 0 })),
+    bits(encodeTurn('a', 'x', 1700000000 + 1, 'text', dim, { timeBucketSec: 0 })),
+  );
+});
+
+test('CHARACTERISATION: turn vectors do not support topical retrieval', () => {
+  // Measured, and the reason no HD relevance signal is wired into the gate.
+  // encodeTurn binds four components and only one of them is the text, so
+  // speaker/time/source dominate and same-vs-different topic barely separate.
+  // Fixing this means reweighting encodeTurn, not tuning a threshold.
+  const dim = 10000;
+  const a = encodeTurn('jordan', 'the deploy is failing on a sqlite error', 1700000001, 'text', dim);
+  const sameTopic = encodeTurn('priya', 'deploy failing again, same sqlite error', 1700000913, 'text', dim);
+  const diffTopic = encodeTurn('priya', 'anyone want tacos for lunch today', 1700000914, 'text', dim);
+
+  const separation = a.xnorPopcountSimilarity(sameTopic) - a.xnorPopcountSimilarity(diffTopic);
+  assert.ok(separation < 0.1,
+    `turn-level separation is known to be weak; got ${separation.toFixed(4)}. `
+    + 'If this now exceeds 0.1, encodeTurn has been reweighted and turn-level '
+    + 'retrieval may finally be worth wiring — revisit CHECKLIST.md.');
+  // Text-to-text on the same content separates an order of magnitude better.
+  const textSep = encodeText('the deploy is failing on a sqlite error', dim)
+    .xnorPopcountSimilarity(encodeText('deploy failing again, same sqlite error', dim))
+    - encodeText('the deploy is failing on a sqlite error', dim)
+      .xnorPopcountSimilarity(encodeText('anyone want tacos for lunch today', dim));
+  assert.ok(textSep > separation * 2, 'text-level separation should dominate turn-level');
 });
 
 test('both risky phases are off by default', withDb(() => {

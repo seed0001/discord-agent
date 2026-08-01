@@ -109,7 +109,76 @@ clears the in-process vectors as well as the table, so it cannot resurrect
 itself on the next save.
 
 `memory.getHdContext(guildId, userId)` returns the accumulators with no I/O and
-no model call. **Nothing consumes it yet** — phase 3.4 built the retrieval side,
-but no caller in either the Python or this port actually reads it. That is the
-obvious next piece of work, and it is where the memory layer starts paying for
-itself.
+no model call.
+
+## Two encoder fixes, and what retrieval can actually support
+
+Phase 3.4 built the retrieval side but neither the original nor the first cut
+of this port had a caller. Investigating what a caller could reasonably do
+turned up two defects in the encoder itself.
+
+**`encodeText` permuted each n-gram by its absolute offset in the string.** That
+means "sqlite" at character 40 and "sqlite" at character 12 are unrelated
+vectors, so two messages about the same thing share almost nothing unless they
+happen to align character-for-character. Measured on real phrasing:
+
+| | same topic | different topic |
+|---|---|---|
+| positional (Python) | 0.5057 | 0.5220 |
+| bundled (new default) | **0.7679** | 0.5110 |
+
+The positional version has no signal at all — the different-topic pair scored
+*higher* than the same-topic one. Bundling is now the default. Near-duplicate
+detection is unaffected (exact 1.0000, one character added 0.9464, unrelated
+0.4983), and order is not lost, because the n-gram itself carries local order.
+
+**`encodeTurn` bound `str(timestamp)`**, a float unique to the millisecond, so
+every turn's time component was a fresh random vector no two turns could share.
+Timestamps are now bucketed to the hour. Be honest about the size of this one:
+it is small — 0.0363 → 0.0384 between different speakers — and it is kept
+because binding a unique-per-turn random component is wrong on its own terms,
+not because it rescues anything.
+
+Both changes are opt-out: `positional: true` and `timeBucketSec: 0` reproduce
+the Python bit-for-bit, and the parity tests use exactly those, so the port
+stays verified against the original.
+
+### Why no relevance signal is wired into the pressure gate
+
+The obvious consumer was giving the gate a model-independent relevance score,
+since `proactive.js` currently takes `relevance` from the model's own JSON —
+self-reported by the thing being judged. It was measured before being wired,
+and it does not work:
+
+- Draft against live conversation context: margin between the worst relevant
+  and best irrelevant draft was **0.0024**. The distributions almost entirely
+  overlap.
+- Draft against the classifier's topic slug: 0.0433 on the first topic tried,
+  but **−0.0100** on the second — an irrelevant draft outscoring a relevant one.
+  Across three topics the worst margin was negative.
+
+Every other variant tried (speaker prefixes stripped, word bigrams, word
+unigrams, 4-grams, 5-grams) was thinner still or negative.
+
+The cause is structural, and no threshold fixes it: `encodeTurn` bundles four
+role-filler bindings and only one of them is the text, so speaker, time and
+source dominate the vector. A turn is mostly *who said it and when*, not *what
+it said*. Same-vs-different topic separates by ~0.04 at turn level against
+~0.26 at text level.
+
+So nothing is wired. Shipping a gate on a 0.002 margin would have repeated the
+exact mistake phase 2 made. It is recorded as a `CHARACTERISATION:` test that
+asserts the weak separation and tells the next person what to change: reweight
+`encodeTurn` so text carries more than a quarter of the vector, then re-measure.
+
+### What the layer is good for as it stands
+
+`encodeText` after the fix is strong at two things, both measured:
+
+- **Near-duplicate detection** — exact copypasta 1.0000, one character added
+  0.9464, unrelated text 0.4983. A margin of ~0.45 is not a threshold anyone
+  has to tune. automod has no copypasta or spam-wave rule today; this is the
+  obvious place it would pay off.
+- **Same-vs-different topic on comparable text** — separation 0.257, provided
+  both sides are focused text of similar length. It degrades when one side is a
+  short slug or a long multi-speaker blob, which is why the gate idea failed.
