@@ -496,7 +496,6 @@ async def clear_manuscript(guild_id: int, user_id: int) -> None:
     await _db.execute(
         "DELETE FROM manuscripts WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
     )
->>>>>>> origin/main
     await _db.commit()
 
 
