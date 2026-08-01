@@ -109,6 +109,13 @@ client.on(Events.GuildMemberAdd, async (member) => {
   } catch (err) {
     console.error('welcome (member add) failed:', err);
   }
+  // Separate try: a join is the clearest raid tell there is, and the sentinel
+  // must still see it even if the welcome message failed to send.
+  try {
+    await automod.checkMemberJoin(member);
+  } catch (err) {
+    console.error('sentinel (member add) failed:', err);
+  }
 });
 
 client.on(Events.GuildMemberRemove, async (member) => {

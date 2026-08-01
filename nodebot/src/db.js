@@ -25,6 +25,7 @@ import {
   VOICE_STOP_LISTENING_WORDS, VOICE_FOLLOWUP_WINDOW_SEC, OPENROUTER_MODEL,
 } from './config.js';
 import { SYSTEM_PROMPT, CAPABILITY_PROMPT } from './persona.js';
+import { packBits, unpackBits } from './gudda/hd.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS guild_settings (
@@ -92,6 +93,14 @@ CREATE TABLE IF NOT EXISTS turns (
     ts           REAL NOT NULL,
     consolidated INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (guild_id, seq)
+);
+CREATE TABLE IF NOT EXISTS hd_memory (
+    guild_id   TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    dim        INTEGER NOT NULL,
+    bits       BLOB NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_warnings_guild_user ON warnings (guild_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_logs_guild ON mod_logs (guild_id, created_at);
@@ -162,6 +171,31 @@ export const DEFAULTS = {
   // proactive speech (pressure engine) — off until deliberately enabled,
   // same as the Python bot: speaking unprompted is opt-in per guild.
   pressure_enabled: false,
+  // Hyperdimensional pre-classification gate (GUDDA_INGESTION_CHECKLIST phase
+  // 2). Skips the background classifier when a message looks like noise
+  // against the signal prototypes.
+  //
+  // Off by default, and it should stay off until the prototypes are actually
+  // trained. They are currently random vectors derived from the literal
+  // strings "signal:blocker" and friends, so a message's similarity to them is
+  // noise centred on 0.5 while the SDM threshold sits at 0.5071 — measured on
+  // real phrasing it blocks genuine blockers and lets "lol nice" through, and
+  // passes ~5% of arbitrary text. Enabling it as-is drops ~95% of signal
+  // classification at random. See test/gudda.test.js, which pins that
+  // behaviour so the day someone trains the prototypes, the test tells them it
+  // worked.
+  hd_gate_enabled: false,
+  // Event anomaly sentinel (phase 4). Two levers on purpose: observe first,
+  // act only once you have watched it on your own traffic.
+  //
+  // sentinel_enabled turns on observation and logging. sentinel_quarantine
+  // lets a QUARANTINE verdict actually mute someone, and is separate because
+  // the scoring is not yet calibrated for continuously-varying fields: any
+  // change to any field yields a near-orthogonal vector, so on ordinary
+  // traffic with a drifting message rate ~97% of events score as severe
+  // anomalies. Bucket the continuous fields before trusting this to act.
+  sentinel_enabled: false,
+  sentinel_quarantine: false,
   // de-escalation. deesc_harsh_language is the separate server preference
   // track that can produce a gentle check-in but never climbs the ladder.
   deesc_enabled: false,
@@ -300,6 +334,44 @@ export function clearMemory(guildId) {
   db.prepare('DELETE FROM memory WHERE guild_id = ?').run(gid);
   db.prepare('DELETE FROM memory_versions WHERE guild_id = ?').run(gid);
   db.prepare('DELETE FROM turns WHERE guild_id = ?').run(gid);
+  db.prepare('DELETE FROM hd_memory WHERE guild_id = ?').run(gid);
+}
+
+// -- HD vector memory --------------------------------------------------------
+//
+// Hypervectors are stored bit-packed rather than as JSON arrays: a dim=10000
+// vector is 1250 bytes here against ~20KB of "0,1,0,1,...". The packing is
+// little-endian, bit i at byte i>>3 — byte-for-byte what db.py's
+// struct.pack("<Q") wrote, so a blob from either implementation reads back
+// correctly in the other.
+
+/** @param {Uint8Array} bits flat 0/1 array of length `dim` */
+export function saveHdMemory(guildId, kind, bits, dim) {
+  db.prepare(
+    'INSERT INTO hd_memory (guild_id, kind, dim, bits, updated_at) VALUES (?, ?, ?, ?, ?) '
+    + 'ON CONFLICT (guild_id, kind) DO UPDATE SET '
+    + 'dim = excluded.dim, bits = excluded.bits, updated_at = excluded.updated_at',
+  ).run(String(guildId), kind, dim, packBits(bits), now());
+}
+
+/** @returns {{bits: Uint8Array, dim: number} | null} */
+export function getHdMemory(guildId, kind) {
+  const row = db.prepare('SELECT dim, bits FROM hd_memory WHERE guild_id = ? AND kind = ?')
+    .get(String(guildId), kind);
+  if (!row) return null;
+  return { bits: unpackBits(Buffer.from(row.bits), row.dim), dim: row.dim };
+}
+
+/** Every stored vector for a guild, keyed by kind. Used to restore profiles,
+ *  whose kinds are `profile:<userId>` and so are not known in advance. */
+export function allHdMemory(guildId) {
+  const rows = db.prepare('SELECT kind, dim, bits FROM hd_memory WHERE guild_id = ?')
+    .all(String(guildId));
+  return rows.map((row) => ({
+    kind: row.kind,
+    dim: row.dim,
+    bits: unpackBits(Buffer.from(row.bits), row.dim),
+  }));
 }
 
 // -- manuscripts ------------------------------------------------------------
