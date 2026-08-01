@@ -1,7 +1,7 @@
 // TTS synthesis — port of tts.py. Fish Audio when FISH_API_KEY is set, with
 // msedge-tts (free, unofficial Edge Read Aloud API) as the fallback.
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
-import { FISH_API_KEY, FISH_TTS_MODEL, FISH_VOICE_ID } from './config.js';
+import { EDGE_TTS_VOICE, FISH_API_KEY, FISH_TTS_MODEL, FISH_VOICE_ID } from './config.js';
 
 const FISH_URL = 'https://api.fish.audio/v1/tts';
 
@@ -127,7 +127,7 @@ async function fish(text) {
 async function edge(text) {
   try {
     const tts = new MsEdgeTTS();
-    await tts.setMetadata('en-US-GuyNeural', OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+    await tts.setMetadata(EDGE_TTS_VOICE, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
     const { audioStream } = tts.toStream(text);
     const chunks = [];
     for await (const chunk of audioStream) chunks.push(chunk);

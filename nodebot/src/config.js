@@ -50,6 +50,10 @@ export const TRANSCRIPTION_MODEL = process.env.TRANSCRIPTION_MODEL || 'whisper-1
 export const FISH_API_KEY = process.env.FISH_API_KEY || '';
 export const FISH_TTS_MODEL = process.env.FISH_TTS_MODEL || 's2.1-pro-free';
 export const FISH_VOICE_ID = process.env.FISH_VOICE_ID || '';
+// Microsoft Edge neural voice when Fish Audio is not configured — any
+// name from https://speech.microsoft.com/portal/voicegallery (e.g.
+// en-US-JennyNeural, en-US-GuyNeural).
+export const EDGE_TTS_VOICE = process.env.EDGE_TTS_VOICE || 'en-US-JennyNeural';
 
 // Env-configured fallback defaults (used to seed db.js's DEFAULTS) — the
 // live, per-guild values come from db.getSetting(guildId, 'voice_wake_words'
