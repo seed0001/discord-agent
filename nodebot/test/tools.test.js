@@ -45,3 +45,29 @@ test('runTool dispatches web_search and reports unknown tools', async () => {
   const unknown = await runTool('not_a_real_tool', {});
   assert.match(unknown, /^Unknown tool/);
 });
+
+test('falls back to instant-answer results when scrape searchFn throws', async () => {
+  const fakeSearch = async () => { throw new Error('DDG detected an anomaly'); };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    assert.match(String(url), /api\.duckduckgo\.com/);
+    return {
+      ok: true,
+      async json() {
+        return {
+          AbstractText: 'Tropical climate overview.',
+          Heading: 'Tanzania',
+          AbstractURL: 'https://example.com/tz',
+          RelatedTopics: [{ Text: 'Dar es Salaam', FirstURL: 'https://example.com/dsm' }],
+        };
+      },
+    };
+  };
+  try {
+    const result = await webSearch('Tanzania climate', fakeSearch);
+    assert.match(result, /Tropical climate overview/);
+    assert.match(result, /Dar es Salaam/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -40,6 +40,11 @@ export const OPENROUTER_BG_HOURLY_CAP = parseInt(process.env.OPENROUTER_BG_HOURL
 export const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 export const GITHUB_REPO = process.env.GITHUB_REPO || 'seed0001/discord-agent';
 
+// Web search: duck-duck-scrape is blocked from most cloud/datacenter IPs
+// (Railway included). BRAVE_SEARCH_API_KEY enables full Brave Web Search;
+// without it, web_search falls back to DuckDuckGo's limited instant-answer API.
+export const BRAVE_SEARCH_API_KEY = process.env.BRAVE_SEARCH_API_KEY || '';
+
 // Speech-to-text: any OpenAI-compatible /audio/transcriptions endpoint
 // (OpenAI Whisper, Groq, ...) — same env vars as the Python bot.
 export const TRANSCRIPTION_API_KEY = process.env.TRANSCRIPTION_API_KEY || '';
