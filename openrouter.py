@@ -60,6 +60,7 @@ async def chat(
     tool_handler=None,
     max_tool_rounds: int = 4,
     background: bool = False,
+    on_tool_calls=None,
 ) -> str:
     """Send a chat completion request and return the assistant's reply text.
 
@@ -67,6 +68,10 @@ async def chat(
     requests tool calls, each is executed via `await tool_handler(name, args)`
     and the results are fed back, up to `max_tool_rounds` rounds. The last
     round is forced tool-free so the model always produces a final answer.
+
+    If `on_tool_calls` is given, it's awaited with the raw tool_calls list the
+    first time the model requests any — before they run — so a caller can
+    surface "working on it" feedback for a slow multi-step action.
     """
     if not config.OPENROUTER_API_KEY:
         raise OpenRouterError("OPENROUTER_API_KEY is not set")
@@ -123,6 +128,9 @@ async def chat(
                 return content
 
             messages.append(reply)
+            if on_tool_calls is not None:
+                await on_tool_calls(tool_calls)
+                on_tool_calls = None  # only announce once, on the first round
             for call in tool_calls:
                 try:
                     args = json.loads(call["function"].get("arguments") or "{}")

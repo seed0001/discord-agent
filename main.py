@@ -17,6 +17,7 @@ import uvicorn
 import config
 import db
 import logbuffer
+import memory
 from bot.client import bot
 from web.app import create_app
 
@@ -100,6 +101,7 @@ async def main():
         log.warning("SECRET_KEY is not set — dashboard sessions will reset on restart.")
 
     await db.init_db()
+    await memory.restore_pending_turns()
 
     app = create_app(bot)
     server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=config.PORT, log_level="info"))

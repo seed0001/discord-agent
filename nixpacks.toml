@@ -1,10 +1,70 @@
-# Hybrid runtime: Python bot + Node.js voice listener sidecar.
-# nodejs   — runs listener/ (discord.js voice with DAVE E2EE support)
-# ffmpeg   — TTS mp3 playback in the sidecar (via prism-media)
+# Node.js runtime. The whole bot is nodebot/ — text chat, voice (DAVE E2EE
+# via @snazzah/davey), moderation, automod, welcome, and the AI tool loop.
+# The Python tree is dormant: still in the repo, never installed or started.
+#
+# nodejs_22       — required by nodebot (node:sqlite, used by src/db.js, is
+#                   built into Node 22, so there is no native sqlite to
+#                   compile). See NODE_OPTIONS below: "built in" does not mean
+#                   "switched on" at the version this resolves to.
+# ffmpeg          — TTS playback via prism-media
+# build-essential — gcc/g++/make/libc6-dev, and
+# python3           python3 for node-gyp's configure step. BUILD-only: nothing
+#                   Python runs at runtime, the dormant Python tree stays
+#                   uninstalled.
+#
+# The toolchain is not optional. @discordjs/opus installs via
+# `node-pre-gyp install --fallback-to-build`, and it publishes no prebuild
+# for this target at all — node-pre-gyp 404s on
+#   .../opus-v0.10.0-node-v127-napi-v3-linux-x64-glibc-2.39.tar.gz
+# (its prebuilds are keyed by libc version, and glibc 2.39 isn't among them),
+# so it compiles from source on every build. It vendors opus in deps/ and
+# links it statically, so a compiler is all it needs — no system libopus.
+#
+# It used to get that toolchain by accident: nixPkgs was ["...", "nodejs_22"],
+# and the "..." pulled in Nixpacks' auto-detected Python provider, which
+# happens to carry a C toolchain. The cutover to Node dropped the "...", the
+# toolchain went with it, and `npm ci` died with "Could not find any Python
+# installation to use". The build never produced an image, so Railway kept
+# serving the previous (Python) deploy and the bot appeared to keep running.
+#
+# These go in aptPkgs, not nixPkgs, deliberately: the Nixpacks base image is
+# Debian, so Debian's own gcc/glibc headers are self-consistent, where a Nix
+# gcc resolving against a Debian base is a known source of build breakage.
+# Listing them explicitly also means they survive deleting the Python tree.
+#
+# Overriding [phases.install] replaces Nixpacks' auto-detected pip install
+# (root requirements.txt still makes it detect a Python app), so no Python
+# dependencies are installed.
 [phases.setup]
-nixPkgs = ["...", "nodejs_22"]
-aptPkgs = ["ffmpeg"]
+nixPkgs = ["nodejs_22"]
+aptPkgs = ["ffmpeg", "build-essential", "python3"]
 
-[phases.listener]
-dependsOn = ["install"]
-cmds = ["cd listener && npm ci --omit=dev"]
+[phases.install]
+cmds = ["cd nodebot && npm ci --omit=dev"]
+
+# node:sqlite is "built into Node 22" but not switched on across all of it:
+# it landed in 22.5.0 behind --experimental-sqlite and was only unflagged in
+# 22.13.0. nixPkgs' nodejs_22 resolves to 22.10.0 here, which is inside that
+# gap, so src/db.js's `import { DatabaseSync } from 'node:sqlite'` died at
+# module load with:
+#
+#   Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:sqlite
+#   Node.js v22.10.0
+#
+# — crash-looping the container after a perfectly good build. The flag is
+# required at/below 22.12 and accepted as a harmless no-op above it, so
+# passing it unconditionally is safe on any Node 22+.
+#
+# Set here as well as in the start command so one-off runs get it too —
+# notably `node nodebot/src/migrate-settings.js`, which opens SQLite the same
+# way and would otherwise fail the same way. Node tolerates the flag arriving
+# from both NODE_OPTIONS and the command line at once.
+[variables]
+NODE_OPTIONS = "--experimental-sqlite"
+
+# Register slash commands, then hand the process over to the bot. The `||`
+# keeps registration non-fatal: a Discord API hiccup or a missing CLIENT_ID
+# must not stop Max from coming up. `exec` replaces the shell so the bot is
+# PID 1 and receives Railway's shutdown signals directly.
+[start]
+cmd = "node --experimental-sqlite nodebot/src/deploy-commands.js || echo 'slash-command registration skipped — bot still starting'; exec node --experimental-sqlite nodebot/src/index.js"

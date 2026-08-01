@@ -17,6 +17,16 @@ OPENROUTER_UTILITY_MODEL = os.environ.get("OPENROUTER_UTILITY_MODEL", "openroute
 # Hard hourly cap on background model calls (0 disables the cap)
 OPENROUTER_BG_HOURLY_CAP = int(os.environ.get("OPENROUTER_BG_HOURLY_CAP", "240"))
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+# The repo Max lives in — enables full GitHub visibility (branches, PRs,
+# diffs, commits, files at any ref), not just the locally checked-out tree
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "seed0001/discord-agent")
+# E2B API key — powers the sandbox tools (clone/install/run/edit/screenshot
+# arbitrary repos in a disposable cloud VM, owner-only). https://e2b.dev
+E2B_API_KEY = os.environ.get("E2B_API_KEY", "")
+# GitHub token with write access, used only by the sandbox push tool. Kept
+# separate from GITHUB_TOKEN (read-only repo analysis) so the write path can
+# be revoked/rotated independently of the read path.
+GITHUB_WRITE_TOKEN = os.environ.get("GITHUB_WRITE_TOKEN", "")
 # Voice transcription: any OpenAI-compatible /audio/transcriptions endpoint
 TRANSCRIPTION_API_KEY = os.environ.get("TRANSCRIPTION_API_KEY", "")
 TRANSCRIPTION_API_URL = os.environ.get("TRANSCRIPTION_API_URL", "https://api.openai.com/v1")

@@ -173,7 +173,9 @@ function render() {
 /* ---------- overview ---------- */
 
 async function renderOverview() {
-  const [g, me] = await Promise.all([api(`/guilds/${state.guildId}`), api("/me")]);
+  const [g, me, settings] = await Promise.all([
+    api(`/guilds/${state.guildId}`), api("/me"), api(`/guilds/${state.guildId}/settings`),
+  ]);
   content().innerHTML = `
     <div class="card" style="display:flex;align-items:center;gap:12px">
       ${g.icon ? `<img class="avatar" src="${g.icon}" style="width:48px;height:48px;border-radius:12px">` : ""}
@@ -205,7 +207,59 @@ async function renderOverview() {
         ${g.quiet_mode ? "🔊 Unmute Max" : "🔇 Mute Max (podcast mode)"}
       </button>
       <button class="btn danger" id="restart-bot-btn">Restart bot</button>
+    </div>
+
+    <div class="section-title">AI persona</div>
+    <div class="card">
+      <label class="field">
+        <span class="lbl-row">
+          <span class="lbl">Character persona — personality &amp; voice</span>
+          <button class="btn ghost sm enhance-btn" data-target="persona-character" data-kind="character">&#x2728; Enhance with AI</button>
+        </span>
+        <textarea id="persona-character" rows="6">${esc(settings.ai_system_prompt)}</textarea>
+      </label>
+      <label class="field">
+        <span class="lbl-row">
+          <span class="lbl">Capability persona — what Max knows he can do</span>
+          <button class="btn ghost sm enhance-btn" data-target="persona-capability" data-kind="capability">&#x2728; Enhance with AI</button>
+        </span>
+        <textarea id="persona-capability" rows="6">${esc(settings.ai_capability_prompt)}</textarea>
+      </label>
+      <button class="btn primary full" id="save-persona">Save persona</button>
     </div>`;
+
+  document.querySelectorAll(".enhance-btn").forEach((btn) => {
+    btn.onclick = async () => {
+      const textarea = $(`#${btn.dataset.target}`);
+      const text = textarea.value.trim();
+      if (!text) return toast("Nothing to enhance", true);
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = "Enhancing…";
+      try {
+        const res = await api(`/guilds/${state.guildId}/ai/enhance`, {
+          method: "POST", body: { kind: btn.dataset.kind, text },
+        });
+        textarea.value = res.text;
+        toast("Enhanced — review, then save");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    };
+  });
+
+  $("#save-persona").onclick = async () => {
+    await api(`/guilds/${state.guildId}/settings`, {
+      method: "PUT",
+      body: {
+        ai_system_prompt: $("#persona-character").value,
+        ai_capability_prompt: $("#persona-capability").value,
+      },
+    });
+    toast("Persona saved");
+  };
+
   $("#quiet-btn").onclick = async () => {
     const r = await api(`/guilds/${state.guildId}/quiet`, {
       method: "POST", body: { on: !g.quiet_mode } });
@@ -680,8 +734,7 @@ async function renderSettings() {
         <input id="s-ai_model" value="${esc(settings.ai_model)}" placeholder="openrouter/free"></label>
       <label class="field"><span class="lbl">Utility model (background: classification, memory, assessments)</span>
         <input id="s-ai_utility_model" value="${esc(settings.ai_utility_model)}" placeholder="openrouter/free"></label>
-      <label class="field"><span class="lbl">System prompt</span>
-        <textarea id="s-ai_system_prompt">${esc(settings.ai_system_prompt)}</textarea></label>
+      <p class="muted" style="margin-bottom:12px">Character &amp; capability persona are edited on the Overview tab.</p>
       <label class="field"><span class="lbl">Always-on AI channels (replies to every message)</span>
         <select id="s-ai_channels" multiple size="5">${textChannels.map((c) =>
           `<option value="${c.id}" ${(settings.ai_channels || []).map(String).includes(c.id) ? "selected" : ""}>#${esc(c.name)}</option>`).join("")}</select>
@@ -781,7 +834,6 @@ async function renderSettings() {
       pressure_enabled: $("#s-pressure_enabled").checked,
       deesc_enabled: $("#s-deesc_enabled").checked,
       deesc_harsh_language: $("#s-deesc_harsh_language").checked,
-      ai_system_prompt: $("#s-ai_system_prompt").value,
       ai_channels: [...$("#s-ai_channels").selectedOptions].map((o) => o.value),
       voice_wake_words: $("#s-voice_wake_words").value.split(",")
         .map((w) => w.trim().toLowerCase()).filter(Boolean),

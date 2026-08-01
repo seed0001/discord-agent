@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Build your bot — Max</title>
+<meta name="description" content="Name him, give him a personality, switch on the systems you want, and get your invite link.">
+<meta name="theme-color" content="#08090d">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='26' fill='%235865f2'/><text y='72' x='50' text-anchor='middle' font-size='60' font-family='sans-serif' font-weight='bold' fill='white'>M</text></svg>">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav__inner">
+    <a href="index.html" class="brand"><span class="brand__mark">M</span><span>Max</span></a>
+    <nav class="nav__links" id="nav-links">
+      <a href="index.html#capabilities">Capabilities</a>
+      <a href="index.html#memory">Memory</a>
+      <a href="index.html#voice">Voice</a>
+      <a href="pricing.html">Pricing</a>
+    </nav>
+    <div class="nav__cta">
+      <a href="index.html" class="btn btn--ghost btn--sm">Overview</a>
+      <button class="btn btn--primary btn--sm" data-reset>Start over</button>
+      <button class="nav__burger" id="burger" aria-label="Menu" aria-expanded="false" aria-controls="nav-links">
+        <svg width="18" height="14" viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M1 1h16M1 7h16M1 13h16"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="wrap builder">
+
+  <!-- ============ STEPS ============ -->
+  <main>
+    <div class="progress" data-progress></div>
+
+    <!-- 1 · Identity -->
+    <section class="pane is-on" data-pane="0">
+      <div class="pane__head">
+        <h2>Who is he?</h2>
+        <p>This is the name and face your server sees. Both are changeable later from the dashboard — nothing here is permanent.</p>
+      </div>
+
+      <div class="field">
+        <label for="botname">Bot name</label>
+        <input class="input" id="botname" maxlength="28" placeholder="Max" data-bind="name">
+        <div class="hint">Shows up on every message, next to the BOT tag.</div>
+      </div>
+
+      <div class="field">
+        <label for="tagline">One-line description</label>
+        <input class="input" id="tagline" maxlength="70" placeholder="Moderator, engineer, and the one who remembers." data-bind="tagline">
+        <div class="hint">Used on his profile and in the welcome message he posts when he joins.</div>
+      </div>
+
+      <div class="field">
+        <label>Accent colour</label>
+        <div class="swatches" data-swatches></div>
+        <div class="hint">Colours his avatar, embeds and role.</div>
+      </div>
+
+      <div class="pane__nav">
+        <button class="btn btn--primary" data-next>Continue</button>
+      </div>
+    </section>
+
+    <!-- 2 · Personality -->
+    <section class="pane" data-pane="1">
+      <div class="pane__head">
+        <h2>How does he talk?</h2>
+        <p>This is the <b>character</b> half of the prompt — who he is and how he sounds. The <b>capability</b> half, which describes what he can actually do, is generated from the modules you switch on next, so he can never claim a tool he does not have.</p>
+      </div>
+
+      <div class="field">
+        <label>Start from a preset</label>
+        <div class="opts" data-presets></div>
+      </div>
+
+      <div class="field">
+        <label for="persona">Character prompt</label>
+        <textarea class="textarea" id="persona" data-bind="persona"></textarea>
+        <div class="hint">Edit freely. Editing switches the preset above to Custom.</div>
+      </div>
+
+      <div class="pane__nav">
+        <button class="btn btn--ghost" data-prev>Back</button>
+        <button class="btn btn--primary" data-next>Continue</button>
+      </div>
+    </section>
+
+    <!-- 3 · Capabilities -->
+    <section class="pane" data-pane="2">
+      <div class="pane__head">
+        <h2>What can he do?</h2>
+        <p>Switch on what your server needs. The tier and price on the right update as you go — you never have to work out which plan you are in.</p>
+      </div>
+
+      <div data-modules></div>
+
+      <div class="pane__nav">
+        <button class="btn btn--ghost" data-prev>Back</button>
+        <button class="btn btn--primary" data-next>Continue</button>
+      </div>
+    </section>
+
+    <!-- 4 · Voice -->
+    <section class="pane" data-pane="3">
+      <div class="pane__head">
+        <h2>How does he listen?</h2>
+        <p>Wake phrases are whole phrases, not keywords — capitals and punctuation are ignored on both sides when matching.</p>
+      </div>
+
+      <div data-voice-off></div>
+
+      <div data-voice-on>
+        <div class="field">
+          <label for="wake">Wake phrases</label>
+          <input class="input" id="wake" placeholder="Type a phrase and press Enter">
+          <div class="phrases" data-phrases></div>
+          <div class="hint">Say any one of these and he joins the conversation out loud.</div>
+        </div>
+
+        <div class="field">
+          <label>Speaking voice</label>
+          <div class="opts" data-voices></div>
+        </div>
+
+        <div class="field">
+          <label for="window">Follow-up window</label>
+          <div class="range-row">
+            <input type="range" id="window" min="0" max="60" step="5" value="25">
+            <span class="range-val" data-window-val>25 seconds</span>
+          </div>
+          <div class="hint">After he finishes speaking, anyone can keep talking for this long without saying a wake phrase. Every real answer re-arms it. Set to 0 to turn follow-up off.</div>
+        </div>
+      </div>
+
+      <div class="pane__nav">
+        <button class="btn btn--ghost" data-prev>Back</button>
+        <button class="btn btn--primary" data-next>Continue</button>
+      </div>
+    </section>
+
+    <!-- 5 · Plan -->
+    <section class="pane" data-pane="4">
+      <div class="pane__head">
+        <h2>Pick your tier.</h2>
+        <p>Your modules need the tier marked <b>required</b>. Go higher for more headroom, or go back and switch modules off to come down.</p>
+      </div>
+
+      <div style="display:flex;justify-content:center;margin-bottom:26px">
+        <div class="toggle" data-billing-b>
+          <button data-cycle="monthly" class="is-on">Monthly</button>
+          <button data-cycle="annual">Annual <span class="save">2 months free</span></button>
+        </div>
+      </div>
+
+      <div class="tiers" data-plan></div>
+
+      <div class="pane__nav">
+        <button class="btn btn--ghost" data-prev>Back</button>
+        <button class="btn btn--primary" data-next>Review &amp; deploy</button>
+      </div>
+    </section>
+
+    <!-- 6 · Deploy -->
+    <section class="pane" data-pane="5">
+      <div class="deploy-card">
+        <div class="deploy-card__tick">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
+        </div>
+        <h3 data-deploy-title>Your bot is ready.</h3>
+        <p>We have registered the Discord application, minted its token, and scoped the invite to exactly the permissions your modules need — nothing more.</p>
+        <div class="invite">
+          <input readonly data-invite value="">
+          <button class="btn btn--primary" data-copy>Copy invite link</button>
+        </div>
+      </div>
+
+      <div class="summary" data-summary></div>
+
+      <div class="notice" style="margin-top:24px;border-color:rgba(88,101,242,.3);background:rgba(88,101,242,.07);color:#c7cbff">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;margin-top:2px"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg>
+        <span>This is a showcase build. No application is really registered and the invite link above is a generated example — it demonstrates the flow, permission scoping and pricing, not a live checkout.</span>
+      </div>
+
+      <div class="pane__nav">
+        <button class="btn btn--ghost" data-prev>Back</button>
+        <a class="btn btn--primary" href="pricing.html" style="margin-left:auto">Compare tiers again</a>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ RAIL ============ -->
+  <aside class="rail">
+    <div class="rail__head">
+      <div class="h3">Your build</div>
+      <p>Updates as you choose.</p>
+    </div>
+    <div class="rail__body">
+      <div class="rail__bot">
+        <div class="rail__avatar" data-rail-avatar>M</div>
+        <div>
+          <div class="rail__botname" data-rail-name>Max</div>
+          <div class="rail__botsub" data-rail-tagline>Moderator, engineer, and the one who remembers.</div>
+        </div>
+      </div>
+
+      <div>
+        <div class="rail__line"><span>Tier</span><b data-rail-tier>Hobby</b></div>
+        <div class="rail__line"><span>Modules on</span><b data-rail-count>5</b></div>
+        <div class="rail__line rail__line--minor"><span>Servers</span><b data-rail-servers>1 server</b></div>
+        <div class="rail__line rail__line--minor"><span>AI replies</span><b data-rail-messages>300 / mo</b></div>
+        <div class="rail__line rail__line--minor"><span>Voice</span><b data-rail-voice>no voice</b></div>
+        <div class="rail__line rail__line--total">
+          <span>Per month</span>
+          <b><span class="amt" data-rail-price>$0</span></b>
+        </div>
+      </div>
+
+      <div class="rail__mods" data-rail-chips></div>
+    </div>
+  </aside>
+</div>
+
+<footer class="footer" style="margin-top:0">
+  <div class="wrap">
+    <div class="footer__base" style="border:0;padding-top:0">
+      <span>© <span data-year></span> Max. A showcase site — not a live storefront.</span>
+      <span><a href="index.html" style="color:var(--muted)">Back to overview</a> &nbsp;·&nbsp; <a href="/" style="color:var(--muted)">Open the dashboard</a></span>
+    </div>
+  </div>
+</footer>
+
+<script src="js/catalog.js"></script>
+<script src="js/site.js"></script>
+<script src="js/build.js"></script>
+</body>
+</html>

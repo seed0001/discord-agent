@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pricing — Max</title>
+<meta name="description" content="Four tiers, per server. Every capability in the catalog, compared side by side.">
+<meta name="theme-color" content="#08090d">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='26' fill='%235865f2'/><text y='72' x='50' text-anchor='middle' font-size='60' font-family='sans-serif' font-weight='bold' fill='white'>M</text></svg>">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav__inner">
+    <a href="index.html" class="brand"><span class="brand__mark">M</span><span>Max</span></a>
+    <nav class="nav__links" id="nav-links">
+      <a href="index.html#capabilities">Capabilities</a>
+      <a href="index.html#memory">Memory</a>
+      <a href="index.html#voice">Voice</a>
+      <a href="index.html#initiative">Initiative</a>
+      <a href="pricing.html">Pricing</a>
+    </nav>
+    <div class="nav__cta">
+      <a href="index.html" class="btn btn--ghost btn--sm">Overview</a>
+      <a href="build.html" class="btn btn--primary btn--sm">Build your bot</a>
+      <button class="nav__burger" id="burger" aria-label="Menu" aria-expanded="false" aria-controls="nav-links">
+        <svg width="18" height="14" viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M1 1h16M1 7h16M1 13h16"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ===================== HEAD ===================== -->
+<section class="section--tight" style="padding-top:72px">
+  <div class="wrap">
+    <div class="section-head section-head--center" style="margin-bottom:36px">
+      <span class="eyebrow">Subscriptions</span>
+      <h1 class="h2" style="font-size:clamp(2.1rem,4.4vw,3.3rem)">One bot. Four ways to run him.</h1>
+      <p class="lede">
+        Priced per server, because that is the unit that actually costs us
+        anything. Every tier ships the full moderation stack — what you are buying
+        further up is how much he remembers, whether he can hear you, and whether
+        he is allowed to speak first.
+      </p>
+    </div>
+
+    <div style="display:flex;justify-content:center;margin-bottom:44px">
+      <div class="toggle" data-billing>
+        <button data-cycle="monthly" class="is-on">Monthly</button>
+        <button data-cycle="annual">Annual <span class="save">2 months free</span></button>
+      </div>
+    </div>
+
+    <div class="tiers" data-tiers></div>
+
+    <p style="text-align:center;color:var(--muted);font-size:.855rem;margin-top:26px">
+      Prices in USD. Cancel any time — he goes quiet at the end of the period and
+      your data stays exportable for 30 days.
+    </p>
+  </div>
+</section>
+
+<!-- ===================== MATRIX ===================== -->
+<section class="section" id="matrix">
+  <div class="wrap">
+    <div class="section-head section-head--center reveal">
+      <span class="eyebrow">The full catalog</span>
+      <h2 class="h2">Every capability, and where it lives.</h2>
+      <p class="lede">
+        Nothing hidden behind "and more". This is the whole surface of the
+        product, grouped the way you would think about it.
+      </p>
+    </div>
+
+    <div class="matrix-wrap reveal">
+      <div class="matrix-scroll">
+        <table class="matrix" data-matrix></table>
+      </div>
+    </div>
+
+    <p style="color:var(--muted);font-size:.83rem;margin-top:14px;text-align:center">
+      Scroll inside the table — the tier headers stay put. Every row here is switchable
+      in the <a href="build.html" style="color:var(--violet)">builder</a>.
+    </p>
+  </div>
+</section>
+
+<hr class="rule">
+
+<!-- ===================== ADD-ONS ===================== -->
+<section class="section" id="addons">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <span class="eyebrow">Add-ons</span>
+      <h2 class="h2">Stretch a tier instead of jumping one.</h2>
+      <p class="lede">
+        When a server outgrows one number but not the whole plan, buy the number.
+      </p>
+    </div>
+    <div class="addons reveal" data-addons></div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<!-- ===================== SELF HOST ===================== -->
+<section class="section--tight">
+  <div class="wrap">
+    <div class="panel reveal" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:34px;align-items:center;padding:36px 34px">
+      <div>
+        <span class="tag">Enterprise &amp; self-host</span>
+        <h2 class="h2" style="font-size:clamp(1.5rem,2.4vw,2rem);margin:13px 0 13px">Run the whole thing yourself.</h2>
+        <p style="color:var(--text-dim);font-size:.95rem;line-height:1.65">
+          Source access, your own Railway project or your own metal, your own
+          keys, and upgrades as they land. For teams whose conversations are not
+          allowed to leave their infrastructure.
+        </p>
+      </div>
+      <div>
+        <ul class="checks" style="margin-top:0">
+          <li><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8.5l3.5 3.5 7.5-8"/></svg>Single-tenant, single SQLite file, on a volume you own</li>
+          <li><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8.5l3.5 3.5 7.5-8"/></svg>Bring your own model provider and transcription keys</li>
+          <li><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8.5l3.5 3.5 7.5-8"/></svg>Unlimited servers, unlimited replies, unlimited voice</li>
+          <li><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8.5l3.5 3.5 7.5-8"/></svg>Onboarding, and a human who answers</li>
+        </ul>
+        <a href="#" class="btn btn--primary" style="margin-top:22px">Talk to us</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== FAQ ===================== -->
+<section class="section" id="faq">
+  <div class="wrap">
+    <div class="section-head section-head--center reveal">
+      <span class="eyebrow">Questions</span>
+      <h2 class="h2">Before you put a card in.</h2>
+    </div>
+    <div class="faq reveal" data-faq></div>
+  </div>
+</section>
+
+<!-- ===================== CTA ===================== -->
+<section class="section--tight">
+  <div class="wrap">
+    <div class="cta-band reveal">
+      <h2 class="h2">Start on free. Move up when he earns it.</h2>
+      <p class="lede">The builder tells you which tier your choices land in before you pay anything.</p>
+      <div class="cta-band__actions">
+        <a href="build.html" class="btn btn--primary btn--lg">Build your bot</a>
+        <a href="index.html" class="btn btn--ghost btn--lg">Back to overview</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer__grid">
+      <div class="footer__about">
+        <a href="index.html" class="brand"><span class="brand__mark">M</span><span>Max</span></a>
+        <p>An AI agent that runs your Discord server — moderator, engineer, and the one who remembers what everybody said.</p>
+      </div>
+      <div>
+        <h5>Product</h5>
+        <ul>
+          <li><a href="index.html#capabilities">Capabilities</a></li>
+          <li><a href="index.html#memory">Memory</a></li>
+          <li><a href="index.html#voice">Voice</a></li>
+          <li><a href="index.html#initiative">Initiative</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5>Start</h5>
+        <ul>
+          <li><a href="build.html">Build your bot</a></li>
+          <li><a href="#matrix">Capability matrix</a></li>
+          <li><a href="#addons">Add-ons</a></li>
+          <li><a href="#faq">FAQ</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5>Company</h5>
+        <ul>
+          <li><a href="#">Docs</a></li>
+          <li><a href="#">Status</a></li>
+          <li><a href="#">Privacy</a></li>
+          <li><a href="#">Terms</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer__base">
+      <span>© <span data-year></span> Max. A showcase site — not a live storefront.</span>
+      <span>Built on the discord-agent project. <a href="/" style="color:var(--text-dim)">Open the dashboard &rarr;</a></span>
+    </div>
+  </div>
+</footer>
+
+<script src="js/catalog.js"></script>
+<script src="js/site.js"></script>
+<script src="js/tiers.js"></script>
+</body>
+</html>

@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python main.py",
+    "startCommand": "node --experimental-sqlite nodebot/src/deploy-commands.js || echo 'slash-command registration skipped — bot still starting'; exec node --experimental-sqlite nodebot/src/index.js",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }

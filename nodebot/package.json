@@ -1,0 +1,28 @@
+{
+  "name": "nodebot",
+  "private": true,
+  "type": "module",
+  "description": "Brand-new Discord bot, built fresh in Node.js — layer by layer.",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "start": "node --experimental-sqlite src/index.js",
+    "deploy-commands": "node --experimental-sqlite src/deploy-commands.js",
+    "test": "OPENROUTER_API_KEY=test-key node --experimental-sqlite --test"
+  },
+  "dependencies": {
+    "@discordjs/opus": "^0.10.0",
+    "@discordjs/voice": "^0.19.2",
+    "@snazzah/davey": "^0.1.12",
+    "discord.js": "^14.27.0",
+    "dotenv": "^16.4.5",
+    "duck-duck-scrape": "^2.2.7",
+    "mammoth": "^1.12.0",
+    "msedge-tts": "^2.0.7",
+    "pdfjs-dist": "^6.2.108",
+    "prism-media": "^1.3.5",
+    "sodium-native": "^5.1.0"
+  }
+}

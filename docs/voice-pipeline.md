@@ -50,10 +50,29 @@ received frames. Hence the hybrid: Python brain, Node ears.
 
 ## Speaking (`tts.py` + sidecar playback)
 
-Two triggers:
+> Note: this section still describes the Python + `listener/` sidecar
+> arrangement. Voice runs in-process in `nodebot/src/voice.js` now, and there
+> is no sidecar or HTTP bridge; the trigger logic below is accurate, the
+> transport is not.
+
+Three triggers:
 - **Wake word** ("hey max", configurable): reply is generated with the
   last ~40 transcript lines as context; TTS audio returns to the sidecar
   in the same HTTP response that delivered the utterance.
+- **Follow-up** (`voice_followup_window_sec`, default 25s): for a window
+  after Max finishes *speaking* — timed off the end of playback, not the end
+  of generation — any utterance in that channel is treated as addressed to
+  him, from anyone, no wake word. Each real answer re-arms the window; a
+  declined one deliberately does not, so idle chatter lets it lapse instead
+  of holding it open. The wake cooldown is bypassed inside the window, since
+  8 seconds is the normal rhythm of back-and-forth. Ends on
+  `voice_stop_listening_words` ("max stop listening"), or on
+  `voice_stop_speaking_words` ("max stop speaking") which instead cuts off
+  playback and aborts the in-flight reply while staying in the conversation.
+  Both are matched *before* the repeated-short-phrase suppressor, which would
+  otherwise eat a stop phrase said twice in a row. Barge-in lands ~2-4s late
+  by construction: an utterance isn't transcribed until the 1s silence gap
+  ends it, plus the transcription round-trip.
 - **Proactive** (pressure gate opens on a voice-channel topic): Python
   pushes TTS to the sidecar's `POST /speak` control endpoint — but only
   after verifying the sidecar is connected to that exact channel.

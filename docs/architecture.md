@@ -64,13 +64,17 @@ its lineage (adapted from seed0001/digital-pressure) and
 `pressure/README.md` for the model.
 
 ### Cross-cutting organs
-- `memory.py` — two-tier persistent memory (working refreshed every 5
-  turns, durable consolidated every ~45), injected into every prompt
+- `memory.py` — two-tier persistent memory (working + durable), both
+  consolidated live after every turn — every text message in every channel,
+  not just ones addressing the bot, plus voice — each tagged with the
+  channel it happened in, injected into every prompt
 - `openrouter.py` — chat-completions client with OpenAI-style tool loop
 - `transcription.py` — OpenAI-compatible `/audio/transcriptions` client
   with hallucination filtering
 - `tts.py` — Fish Audio (S1/S2 tag styles) with edge-tts fallback
 - `tools.py` — web_search + github_repo tools
+- `documents.py` — extracts text from message attachments (txt/md/code,
+  PDF, docx) so the AI can review dropped-in files
 - `logbuffer.py` — ring buffer feeding the dashboard Logs tab
 
 ## Data flow: a voice utterance, end to end

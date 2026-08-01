@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1e1f22">
+  <title>Discord Agent</title>
+  <link rel="stylesheet" href="/static/style.css?v=__BUILD__">
+</head>
+<body>
+
+  <!-- Login -->
+  <div id="login-screen" class="hidden">
+    <div class="login-card">
+      <h1>Discord Agent</h1>
+      <a id="login-discord" class="btn primary full hidden" href="/api/auth/discord">Sign in with Discord</a>
+      <p id="login-discord-note" class="muted hidden">Your access follows your roles in the server.</p>
+      <p class="muted" id="login-password-label">Enter the dashboard password</p>
+      <form id="login-form">
+        <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" required>
+        <button type="submit" class="btn full">Log in</button>
+      </form>
+      <p id="login-error" class="error hidden">Wrong password</p>
+      <p class="muted" style="margin-top:18px"><a href="/site/" style="color:var(--accent);text-decoration:none">See the showcase site &rarr;</a></p>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <header>
+      <select id="guild-select" aria-label="Server"></select>
+      <button id="logout-btn" class="btn ghost" title="Log out">&#x23FB;</button>
+    </header>
+
+    <main id="content"></main>
+
+    <nav id="tabbar">
+      <button data-tab="overview" class="active"><span>&#x1F4CA;</span>Overview</button>
+      <button data-tab="members"><span>&#x1F465;</span>Members</button>
+      <button data-tab="server"><span>&#x1F3E0;</span>Server</button>
+      <button data-tab="voice"><span>&#x1F399;</span>Voice</button>
+      <button data-tab="mod"><span>&#x1F6E1;</span>Mod</button>
+      <button data-tab="logs"><span>&#x1F4DC;</span>Logs</button>
+      <button data-tab="settings"><span>&#x2699;</span>Settings</button>
+    </nav>
+  </div>
+
+  <!-- Modal -->
+  <div id="modal-backdrop" class="hidden">
+    <div id="modal"></div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+
+  <script src="/static/app.js?v=__BUILD__"></script>
+</body>
+</html>

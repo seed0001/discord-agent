@@ -15,6 +15,7 @@ from pydantic import BaseModel
 import config
 import db
 import logbuffer
+import openrouter
 from bot.utils import log_action
 from web.auth import check_password, create_token, require_auth, TOKEN_TTL
 
@@ -210,6 +211,52 @@ async def put_settings(guild_id: str, body: dict, request: Request):
             raise HTTPException(status_code=400, detail=f"Unknown setting: {key}")
         await db.set_setting(g.id, key, value)
     return {"ok": True}
+
+
+ENHANCE_PROMPTS = {
+    "character": (
+        "You improve Discord bot persona descriptions. The text below describes a bot's "
+        "personality and voice — how it talks, its vibe, its character. Rewrite it to be "
+        "more vivid, specific, and well-written while preserving the original personality, "
+        "tone, and intent. Keep it roughly the same length. "
+        "Reply with ONLY the rewritten persona text — no preamble, no quotes, no commentary."
+    ),
+    "capability": (
+        "You improve Discord bot self-awareness descriptions. The text below describes what "
+        "the bot is aware it can do (its features and tools), so it can talk about itself "
+        "accurately to server members. Rewrite it to be clearer and more precise while "
+        "preserving every fact and capability mentioned — do not invent new features or drop "
+        "existing ones. Keep it roughly the same length. "
+        "Reply with ONLY the rewritten text — no preamble, no quotes, no commentary."
+    ),
+}
+
+
+class EnhancePersonaBody(BaseModel):
+    kind: str  # "character" | "capability"
+    text: str
+
+
+@protected.post("/guilds/{guild_id}/ai/enhance")
+async def enhance_persona(guild_id: str, body: EnhancePersonaBody, request: Request):
+    g = get_guild(request, guild_id)
+    prompt = ENHANCE_PROMPTS.get(body.kind)
+    if prompt is None:
+        raise HTTPException(status_code=400, detail="Unknown kind")
+    if not body.text.strip():
+        raise HTTPException(status_code=400, detail="Nothing to enhance")
+    model = await db.get_setting(g.id, "ai_model")
+    try:
+        result = await openrouter.chat(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": body.text},
+            ],
+            model=model, max_tokens=600, temperature=0.8,
+        )
+    except openrouter.OpenRouterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"text": result.strip()}
 
 
 # -- members ----------------------------------------------------------------

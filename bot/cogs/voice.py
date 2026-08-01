@@ -14,9 +14,11 @@ the sidecar for playback in the voice channel.
 """
 import asyncio
 import base64
+import json
 import logging
 import time
 from collections import defaultdict, deque
+from types import SimpleNamespace
 
 import discord
 import httpx
@@ -25,12 +27,14 @@ from discord.ext import commands
 
 import config
 import db
+import knowledge
 import memory
 import openrouter
 import tools
 import transcription
 import tts
-from bot.utils import log_action, owner_only
+from bot import agent_tools, sandbox_tools
+from bot.utils import is_owner, log_action, owner_only
 
 log = logging.getLogger("voice")
 
@@ -40,6 +44,52 @@ WAKE_COOLDOWN = 8         # seconds between wake responses per channel
 MAX_CONCURRENT_STT = 4    # simultaneous transcription API calls
 REPEAT_SUPPRESS_S = 45    # identical short phrases from one user within this
 REPEAT_MAX_CHARS = 30     # window are noise-triggered hallucinations — drop
+MAX_TOOL_ROUNDS = 8       # model<->tool round trips per wake response, same as ai.py
+
+# Short, spoken-friendly blurbs for the "on it" announcement that plays before
+# a chained action actually runs, keyed by agent_tools tool name.
+_ACTION_BLURBS = {
+    "kick_member": lambda a: f"kicking {a.get('user')}",
+    "ban_member": lambda a: f"banning {a.get('user')}",
+    "unban_user": lambda a: f"unbanning user {a.get('user_id')}",
+    "timeout_member": lambda a: f"timing out {a.get('user')} for {a.get('minutes')} minutes",
+    "untimeout_member": lambda a: f"removing {a.get('user')}'s timeout",
+    "warn_member": lambda a: f"warning {a.get('user')}",
+    "clear_warnings": lambda a: f"clearing {a.get('user')}'s warnings",
+    "purge_messages": lambda a: f"deleting {a.get('amount')} messages"
+        + (f" in #{a['channel']}" if a.get("channel") else ""),
+    "set_slowmode": lambda a: f"setting slowmode to {a.get('seconds')}s"
+        + (f" in #{a['channel']}" if a.get("channel") else ""),
+    "lock_channel": lambda a: ("locking" if a.get("locked", True) else "unlocking")
+        + (f" #{a['channel']}" if a.get("channel") else " this channel"),
+    "create_channel": lambda a: f"creating a {a.get('kind', 'text')} channel called {a.get('name')}",
+    "delete_channel": lambda a: f"deleting #{a.get('channel')}",
+    "set_channel_topic": lambda a: "updating the topic"
+        + (f" for #{a['channel']}" if a.get("channel") else ""),
+    "send_message": lambda a: "posting that" + (f" in #{a['channel']}" if a.get("channel") else ""),
+    "give_role": lambda a: f"giving {a.get('user')} the {a.get('role')} role",
+    "take_role": lambda a: f"removing the {a.get('role')} role from {a.get('user')}",
+    "create_role": lambda a: f"creating the {a.get('name')} role",
+    "delete_role": lambda a: f"deleting the {a.get('role')} role",
+}
+
+
+def _describe_tool_calls(tool_calls: list[dict]) -> str:
+    """Turn raw OpenRouter tool_calls into one short, speakable "on it" line,
+    so the owner hears what's about to happen before it happens, not just
+    the after-the-fact result."""
+    parts = []
+    for call in tool_calls:
+        fn = call.get("function", {})
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        blurb = _ACTION_BLURBS.get(fn.get("name", ""))
+        parts.append(blurb(args) if blurb else "handling that")
+    if not parts:
+        return "on it, one sec."
+    return "on it — " + ", then ".join(parts) + "."
 
 VOICE_PROMPT = (
     "\nRight now you are LIVE in the voice channel \"{channel}\" — you've been "
@@ -51,16 +101,28 @@ VOICE_PROMPT = (
     "channel, so keep it tight, no markdown, no walls of text."
 )
 
+VOICE_OWNER_ACTION_NOTE = (
+    "\nThis request came in as spoken, natural language, not a typed command — "
+    "there is no slash-command syntax to give you, so parse loose everyday "
+    "phrasing yourself and act on it directly with your tools. If what's asked "
+    "requires one or more tool calls, a short heads-up ('on it — doing X') is "
+    "spoken for you automatically the moment you request them, so you don't "
+    "need to announce that yourself. Your final reply is the completion "
+    "report, spoken after the action(s) finish — say what you did, plainly, "
+    "like you're telling the room it's done."
+)
+
 FISH_TAG_PROMPT = (
     "\nYour reply is spoken aloud through a voice engine that understands "
     "emotion tags. Sprinkle tags into your reply — in parentheses, at the "
     "start of a sentence — to give your voice the right delivery. Use them "
-    "naturally, 1-3 per reply, matching your chill persona and the moment. "
+    "naturally, 1-3 per reply, matching YOUR ACTUAL PERSONA above and the "
+    "moment — not a generic tone, whatever character you've been given. "
     "Available tags: (relaxed) (amused) (excited) (curious) (confident) "
     "(joyful) (serious) (sarcastic) (comforting) (empathetic) (surprised) "
     "(hesitating) (whispering) (soft tone) (laughing) (chuckling) (sighing) "
-    "(break). Example: \"(relaxed) honestly dude, both of you have a point. "
-    "(chuckling) but the tabs-vs-spaces thing died in 2015.\""
+    "(break). These are delivery cues, not a script — pick whichever tags "
+    "fit your persona's voice in the moment, not a fixed set."
 )
 
 FISH_S2_TAG_PROMPT = (
@@ -70,10 +132,10 @@ FISH_S2_TAG_PROMPT = (
     "natural description works: [relaxed] [excited] [whispering] [deadpan] "
     "[slows down, thoughtful] [laughing nervously]. It also does paralanguage "
     "sounds in parentheses: (laugh) (sigh) (breath) (break) (long-break). "
-    "Use a few per reply, matching your chill persona and the moment. "
-    "Example: \"[relaxed] honestly dude, both of you have a point. (laugh) "
-    "[deadpan] but the tabs-vs-spaces war died in 2015. [soft, sincere] "
-    "ship the thing, that's what matters.\""
+    "Use a few per reply, matching YOUR ACTUAL PERSONA above and the moment "
+    "— the directions should sound like your character, not a generic "
+    "narrator. Since it's free-form text, describe delivery however your "
+    "persona would actually deliver it."
 )
 
 
@@ -167,7 +229,7 @@ class Voice(commands.Cog):
         flagged = await self._check_banned_words(guild, channel, name, text)
         self.transcripts[channel_id].append(
             {"ts": time.time(), "name": name, "text": text, "flagged": flagged})
-        memory.record_turn(guild_id, name, text, "voice", user_id=user_id)
+        memory.record_turn(guild_id, name, text, "voice", user_id=user_id, channel=channel.name)
         proactive = self.bot.get_cog("Proactive")
         if proactive is not None:
             try:
@@ -235,22 +297,61 @@ class Voice(commands.Cog):
         self.last_wake[channel.id] = now
 
         guild = channel.guild
+        owner = is_owner(speaker_id)
         ai_cog = self.bot.get_cog("AI")
-        base_prompt = await ai_cog.build_system_prompt(guild, speaker_id=speaker_id) if ai_cog else ""
+        base_prompt = await ai_cog.build_system_prompt(
+            guild, owner=owner, speaker_id=speaker_id) if ai_cog else ""
         system_prompt = base_prompt + VOICE_PROMPT.format(
             channel=channel.name, speaker=speaker_name
         )
+        if owner:
+            system_prompt += VOICE_OWNER_ACTION_NOTE
         if tts.fish_enabled():
             system_prompt += FISH_S2_TAG_PROMPT if tts.is_s2() else FISH_TAG_PROMPT
         lines = [e for e in self.transcripts[channel.id] if not e.get("system")][-CONTEXT_LINES:]
         transcript = "\n".join(f"{e['name']}: {e['text']}" for e in lines)
         model = await db.get_setting(guild.id, "ai_model")
+
+        schemas = list(tools.TOOL_SCHEMAS) + [memory.RECALL_TOOL_SCHEMA] + knowledge.KB_TOOL_SCHEMAS
+        fake_message = SimpleNamespace(
+            guild=guild, channel=channel,
+            author=guild.get_member(speaker_id) or discord.Object(id=speaker_id))
+
+        async def handler(name, args, _msg=fake_message):
+            if name == "recall_chat_log":
+                return await memory.recall(
+                    guild.id, member=args.get("member"), query=args.get("query"),
+                    limit=int(args.get("limit", 40) or 40))
+            if name.startswith("kb_"):
+                return await knowledge.run_tool(guild.id, name, args)
+            if owner and name in agent_tools.TOOLS:
+                return await agent_tools.execute(self.bot, _msg, name, args)
+            if owner and name in sandbox_tools.TOOLS:
+                return await sandbox_tools.execute(self.bot, _msg, name, args)
+            return await tools.run_tool(name, args)
+
+        on_tool_calls = None
+        if owner:
+            schemas += agent_tools.TOOL_SCHEMAS + sandbox_tools.TOOL_SCHEMAS
+
+            async def on_tool_calls(tool_calls):
+                blurb = _describe_tool_calls(tool_calls)
+                self.transcripts[channel.id].append(
+                    {"ts": time.time(), "name": self.bot.user.display_name,
+                     "text": blurb, "bot": True})
+                try:
+                    await channel.send(blurb)
+                except discord.HTTPException:
+                    pass
+                await self.speak_in_voice(guild, channel.id, blurb)
+
         try:
             reply = await openrouter.chat(
                 [{"role": "system", "content": system_prompt},
                  {"role": "user", "content": f"[voice transcript of #{channel.name}]\n{transcript}"}],
                 model=model,
-                tools=tools.TOOL_SCHEMAS, tool_handler=tools.run_tool,
+                tools=schemas, tool_handler=handler,
+                max_tool_rounds=MAX_TOOL_ROUNDS, on_tool_calls=on_tool_calls,
             )
         except openrouter.OpenRouterError as exc:
             log.warning("Wake response failed: %s", exc)
@@ -261,7 +362,8 @@ class Voice(commands.Cog):
         display = tts.strip_voice_tags(reply) or reply
         self.transcripts[channel.id].append(
             {"ts": time.time(), "name": self.bot.user.display_name, "text": display, "bot": True})
-        memory.record_turn(channel.guild.id, self.bot.user.display_name, display, "voice")
+        memory.record_turn(channel.guild.id, self.bot.user.display_name, display, "voice",
+                           channel=channel.name)
         try:
             for chunk in [display[i:i + 1990] for i in range(0, len(display), 1990)]:
                 await channel.send(chunk)

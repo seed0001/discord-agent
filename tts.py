@@ -65,13 +65,69 @@ def strip_voice_tags(text: str) -> str:
     return text.strip()
 
 
+# Per-request text budget for each backend. A longer reply is split at
+# sentence boundaries and synthesized piece by piece, then the MP3s are
+# concatenated — MP3 is a stream of self-contained frames, so joining the
+# bytes plays back as one continuous clip. That keeps the single-blob
+# contract speak_in_voice() expects while letting a multi-paragraph reply be
+# spoken in full; both backends used to hard-slice and drop the remainder.
+FISH_CHUNK = 1500
+EDGE_CHUNK = 700
+# Ceiling on synthesis calls per reply, so a runaway answer can't fan out
+# into dozens of API requests. Hitting it is logged, never silent.
+MAX_CHUNKS = 8
+
+_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def split_for_tts(text: str, limit: int) -> list[str]:
+    """Split text into <=limit pieces, preferring sentence/paragraph breaks."""
+    chunks: list[str] = []
+    cur = ""
+    for piece in (p for p in _SPLIT_RE.split(text or "") if p.strip()):
+        # A single sentence longer than the budget still has to be broken up.
+        while len(piece) > limit:
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            chunks.append(piece[:limit])
+            piece = piece[limit:]
+        if not cur:
+            cur = piece
+        elif len(cur) + 1 + len(piece) <= limit:
+            cur += " " + piece
+        else:
+            chunks.append(cur)
+            cur = piece
+    if cur.strip():
+        chunks.append(cur)
+    return chunks
+
+
+async def _synthesize_with(text: str, limit: int, backend, label: str) -> bytes | None:
+    chunks = split_for_tts(text, limit)
+    if not chunks:
+        return None
+    if len(chunks) > MAX_CHUNKS:
+        log.warning("reply needs %d %s chunks — speaking the first %d",
+                    len(chunks), label, MAX_CHUNKS)
+        chunks = chunks[:MAX_CHUNKS]
+    parts = []
+    for chunk in chunks:
+        audio = await backend(chunk)
+        if not audio:
+            return None  # fall through to the next backend for the whole reply
+        parts.append(audio)
+    return b"".join(parts)
+
+
 async def synthesize(text: str) -> bytes | None:
     """Return mp3 audio for text, or None if no TTS backend works."""
     if fish_enabled():
-        audio = await _fish(text)
+        audio = await _synthesize_with(text, FISH_CHUNK, _fish, "Fish")
         if audio:
             return audio
-    return await _edge(strip_voice_tags(text))
+    return await _synthesize_with(strip_voice_tags(text), EDGE_CHUNK, _edge, "edge")
 
 
 async def _fish(text: str) -> bytes | None:
@@ -80,7 +136,7 @@ async def _fish(text: str) -> bytes | None:
         "Content-Type": "application/json",
         "model": config.FISH_TTS_MODEL,
     }
-    payload = {"text": text[:2000], "format": "mp3", "latency": "normal"}
+    payload = {"text": text, "format": "mp3", "latency": "normal"}
     if config.FISH_VOICE_ID:
         payload["reference_id"] = config.FISH_VOICE_ID
     try:
@@ -100,7 +156,7 @@ async def _edge(text: str) -> bytes | None:
         import edge_tts
 
         buf = bytearray()
-        async for chunk in edge_tts.Communicate(text[:800], voice="en-US-GuyNeural").stream():
+        async for chunk in edge_tts.Communicate(text, voice="en-US-GuyNeural").stream():
             if chunk["type"] == "audio":
                 buf += chunk["data"]
         return bytes(buf) or None
