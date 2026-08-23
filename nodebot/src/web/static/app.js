@@ -979,6 +979,18 @@ async function renderSettings() {
               wake words below still trigger instantly in either mode. The classifier uses
               the utility model, the same cheap one memory and de-escalation use.</span>
           </div>
+          <div class="section-title">Follow-up listening</div>
+          <div class="card">
+            <label class="toggle"><input type="checkbox" id="s-voice_followup_enabled"
+              ${settings.voice_followup_enabled ? "checked" : ""}> Keep listening without the wake word
+              after ${esc(botLabel(settings))} finishes speaking</label>
+            <label class="field"><span class="lbl">Follow-up window (seconds)</span>
+              <input id="s-voice_followup_window_sec" type="number" min="0" max="120"
+                value="${settings.voice_followup_window_sec ?? 25}"></label>
+            <span class="muted">How long after ${esc(botLabel(settings))} stops talking anyone can keep
+              the conversation going without saying the wake word again. Each real answer re-arms it.
+              Set to 0 to require the wake word every time.</span>
+          </div>
         </section>
 
         <section class="settings-panel ${activeTab === "voice-cues" ? "active" : ""}" data-panel="voice-cues">
@@ -1172,6 +1184,8 @@ async function renderSettings() {
       edge_tts_voice: $("#s-edge_tts_voice").value.trim(),
       tts_strip_markdown: $("#s-tts_strip_markdown").checked,
       voice_detection_mode: $("#s-voice_detection_mode").value,
+      voice_followup_enabled: $("#s-voice_followup_enabled").checked,
+      voice_followup_window_sec: Math.max(0, parseInt($("#s-voice_followup_window_sec").value, 10) || 0),
       voice_cue_thinking: readCue("thinking"),
       voice_cue_engaging: readCue("engaging"),
       voice_cue_declined: readCue("declined"),
