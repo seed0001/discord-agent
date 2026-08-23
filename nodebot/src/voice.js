@@ -628,7 +628,9 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
     if (channelBrains.isChannelBrainsTool(name)) return channelBrains.execute(name, args, owner);
     return runTool(name, args);
   };
+  let headsUpGiven = false;
   const onToolCalls = (owner || canGenerate || canMakeMusic) ? async (toolCalls) => {
+    headsUpGiven = true;
     const blurb = describeToolCalls(toolCalls);
     recordTurn(guild.id, { source: 'voice', channel: channel.name, speaker: self, text: blurb });
     try {
@@ -670,6 +672,17 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
         } catch { /* the spoken version is the one that matters */ }
         return;
       }
+    }
+    // The "on it" heads-up already told the room to expect a follow-up — if
+    // the loop then fails, silence here would leave that promise hanging
+    // (console.warn is invisible from Discord). Say so plainly instead,
+    // whatever the failure turns out to be.
+    if (headsUpGiven) {
+      const failureNote = "sorry — something went wrong finishing that.";
+      await speakInVoice(guild, failureNote);
+      try {
+        await channel.send(failureNote);
+      } catch { /* the spoken version is the one that matters */ }
     }
     if (err instanceof OpenRouterError) {
       console.warn('[voice] wake response failed:', err.message);
