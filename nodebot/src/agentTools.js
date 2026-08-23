@@ -255,6 +255,16 @@ async function lockChannel(client, message, args) {
   return `${locked ? 'Locked' : 'Unlocked'} #${channel.name}.`;
 }
 
+async function setChannelAccess(client, message, args) {
+  const channel = args.channel ? resolveChannel(message.guild, args.channel) : message.channel;
+  const role = args.role ? resolveRole(message.guild, args.role) : message.guild.roles.everyone;
+  const visible = args.visible === undefined ? true : Boolean(args.visible);
+  await channel.permissionOverwrites.edit(role, { ViewChannel: visible });
+  await logAction(message.guild, 'channel_access', actor(message), `#${channel.name}`,
+    `${role.name} -> ${visible ? 'visible' : 'hidden'}`);
+  return `#${channel.name} is now ${visible ? 'visible' : 'hidden'} for ${role.name}.`;
+}
+
 // -- channel tools --------------------------------------------------------------
 
 const CHANNEL_KIND_TYPES = {
@@ -458,6 +468,15 @@ export const TOOLS = {
   lock_channel: [schema('lock_channel', 'Lock or unlock a text channel for @everyone.',
     { locked: { type: 'boolean', description: 'true to lock, false to unlock (default true)' }, channel: CHANNEL_OPT }),
     lockChannel],
+  set_channel_access: [schema('set_channel_access',
+    'Show or hide a channel for a role by editing its View Channel permission. Use this to gate '
+    + 'channels behind a role — e.g. hide a channel from @everyone, then make it visible to a '
+    + 'specific role so only members who have that role can see it.',
+    {
+      visible: { type: 'boolean', description: 'true to make the channel visible to this role, false to hide it' },
+      role: str('Role name, mention, or ID (defaults to @everyone)'),
+      channel: CHANNEL_OPT,
+    }, ['visible']), setChannelAccess],
   create_channel: [schema('create_channel', 'Create a text, voice, category, or forum channel.',
     {
       name: str('Name for the new channel'),

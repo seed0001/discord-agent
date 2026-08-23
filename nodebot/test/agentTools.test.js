@@ -159,6 +159,33 @@ test('create_channel and create_role actually create and log', withDb(async () =
   assert.equal(db.getLogs('1').filter((l) => l.action === 'role_create').length, 1);
 }));
 
+test('set_channel_access hides a channel from @everyone, then reveals it to a role', withDb(async () => {
+  const guild = fakeGuild('1');
+  guild.members.me = fakeMember('bot-id', { username: 'Max' });
+  guild.roles.everyone.name = '@everyone';
+  const overwrites = [];
+  const channel = {
+    name: 'secret-room',
+    permissionOverwrites: { edit: async (target, perms) => { overwrites.push({ target, perms }); } },
+  };
+  const message = fakeMessage(guild, channel);
+
+  const hidden = await agentTools.execute(null, message, 'set_channel_access', { visible: false }, OWNER);
+  assert.match(hidden, /#secret-room is now hidden for @everyone/);
+  assert.equal(overwrites[0].target, guild.roles.everyone);
+  assert.equal(overwrites[0].perms.ViewChannel, false);
+
+  const memberRole = { id: 'role-members', name: 'Members' };
+  guild.roles.cache.set(memberRole.id, memberRole);
+  const shown = await agentTools.execute(
+    null, message, 'set_channel_access', { visible: true, role: 'Members' }, OWNER,
+  );
+  assert.match(shown, /#secret-room is now visible for Members/);
+  assert.equal(overwrites[1].target, memberRole);
+  assert.equal(overwrites[1].perms.ViewChannel, true);
+  assert.equal(db.getLogs('1').filter((l) => l.action === 'channel_access').length, 2);
+}));
+
 test('create_role rejects an invalid hex color', withDb(async () => {
   const guild = fakeGuild('1');
   guild.members.me = fakeMember('bot-id', { username: 'Max' });

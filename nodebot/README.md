@@ -24,6 +24,12 @@ is ready, it takes over and the Python code goes away.
   `giverole.js` `takerole.js` `createrole.js` `deleterole.js`
   `testwelcome.js` — ported from channels.py/roles.py/welcome.py, same
   owner-only + logAction pattern as the moderation commands
+- `src/commands/channelaccess.js` — shows/hides a channel for a role by
+  editing its View Channel permission overwrite (role/channel both
+  optional, defaulting to @everyone / the current channel). For gating a
+  server so new members only see a couple of channels until given a role:
+  deny View Channel for @everyone on the gated channels, then allow it for
+  the role that unlocks them (autorole/`giverole` grants that role).
 - `src/load-commands.js` — drops a new file in `src/commands/` to add a
   command, nothing else to wire up
 - `src/deploy-commands.js` — registers commands with Discord
@@ -51,7 +57,11 @@ is ready, it takes over and the Python code goes away.
   from the Python bot's bot/agent_tools.py: all 25 of them (server/member/
   role/channel lookups, kick/ban/unban/timeout/untimeout/warn/warnings/
   clear_warnings/purge/slowmode/lock, create/delete channel, set topic,
-  send_message, give/take/create/delete role). This is what lets the owner
+  send_message, give/take/create/delete role), plus `set_channel_access`
+  (not from the Python bot — shows/hides a channel for a role, same
+  permission-overwrite edit `/channelaccess` uses) for asking Max to gate
+  channels directly in chat/voice instead of typing the slash command. This
+  is what lets the owner
   just *ask* Max to kick someone in chat or voice instead of typing
   `/kick` — the moderation slash commands and these tools both end up
   calling the same Discord actions and logging through the same
