@@ -138,6 +138,11 @@ client.on(Events.GuildMemberAdd, async (member) => {
   } catch (err) {
     console.error('welcome (member add) failed:', err);
   }
+  try {
+    await gatekeeping.handleMemberAdd(member);
+  } catch (err) {
+    console.error('gatekeeping (member add) failed:', err);
+  }
 });
 
 client.on(Events.GuildMemberRemove, async (member) => {
@@ -149,6 +154,13 @@ client.on(Events.GuildMemberRemove, async (member) => {
 });
 
 client.on(Events.VoiceStateUpdate, voice.handleVoiceStateUpdate);
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  try {
+    gatekeeping.handleVoiceStateUpdate(oldState, newState);
+  } catch (err) {
+    console.error('gatekeeping (voice state) failed:', err);
+  }
+});
 
 process.on('unhandledRejection', (err) => console.error('unhandled rejection:', err));
 
