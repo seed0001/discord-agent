@@ -203,6 +203,19 @@ export const DEFAULTS = {
   welcome_message: 'Welcome {user} to {server}! You are member #{membercount}.',
   goodbye_message: '{user} has left {server}.',
   autorole: null,
+  // gatekeeping: new-member lobby vetting (gatekeeping.js). Off until an
+  // admin runs /gatekeeping setup and /gatekeeping enable — a half-configured
+  // gate (e.g. no unverified role set) should never silently start locking
+  // new members into a channel nobody told them to look for.
+  gatekeeping_enabled: false,
+  gatekeeping_lobby_voice_channel: null,
+  gatekeeping_lobby_text_channel: null,
+  gatekeeping_mod_channel: null,
+  gatekeeping_unverified_role: null,
+  // Optional. null means "just remove the unverified role on approval and
+  // let @everyone permissions take over" — a separate verified role is only
+  // needed if the server's permission model calls for one.
+  gatekeeping_verified_role: null,
   // automod
   automod_enabled: false,
   banned_words: [],

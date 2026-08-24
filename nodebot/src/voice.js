@@ -457,6 +457,19 @@ async function handleUtterance(guild, channel, userId, pcm) {
   memory.recordTurn(guild.id, name, text, {
     source: 'voice', userId, channel: channel.name,
   });
+
+  // Gatekeeping owns this utterance instead of the usual wake-word pipeline
+  // when it's the person currently being lobby-interviewed — an interview
+  // isn't a "hey Max" conversation, it's the reason they're in the channel
+  // at all. Dynamic import to avoid a cycle: gatekeeping.js imports this
+  // module statically (to join/leave/speak), so this module can't import it
+  // back statically too.
+  const gatekeeping = await import('./gatekeeping.js');
+  if (gatekeeping.activeInterview(guild.id, channel.id)?.targetUserId === userId) {
+    await gatekeeping.handleInterviewUtterance(guild, channel, userId, text);
+    return;
+  }
+
   // Voice transcripts feed the pressure classifier too, so proactive speech
   // sees what was said out loud, not just what was typed.
   import('./proactive.js')

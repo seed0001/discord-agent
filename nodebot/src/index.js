@@ -7,6 +7,7 @@ import * as voice from './voice.js';
 import * as automod from './automod.js';
 import * as antispam from './antispam.js';
 import * as welcome from './welcome.js';
+import * as gatekeeping from './gatekeeping.js';
 import * as memory from './memory.js';
 import * as proactive from './proactive.js';
 import * as logbuffer from './logbuffer.js';
@@ -76,6 +77,14 @@ client.once(Events.ClientReady, (c) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isButton()) {
+    try {
+      await gatekeeping.handleVettingButton(interaction);
+    } catch (err) {
+      console.error('vetting button failed:', err);
+    }
+    return;
+  }
   if (!interaction.isChatInputCommand()) return;
   const command = client.commands.get(interaction.commandName);
   if (!command) return;
@@ -107,6 +116,11 @@ client.on(Events.MessageCreate, async (message) => {
     await handleMessage(client, message);
   } catch (err) {
     console.error('message handling failed:', err);
+  }
+  try {
+    await gatekeeping.handleLobbyText(client, message);
+  } catch (err) {
+    console.error('gatekeeping (lobby text) failed:', err);
   }
   // Observation and signal classification for proactive speech. Runs for
   // every message including Max's own (which are observed but never charge
