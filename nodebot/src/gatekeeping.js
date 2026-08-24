@@ -22,11 +22,10 @@ import * as voice from './voice.js';
 import { OWNER_ID } from './config.js';
 import { chat, OpenRouterError } from './openrouter.js';
 import { InsufficientCreditsError } from './credits/index.js';
-import { recordTurn, formatForPrompt } from './conversation.js';
+import { recordTurn } from './conversation.js';
 import { botName } from './botName.js';
 import { isOwner, logAction } from './utils.js';
 
-const CONTEXT_TURNS = 40;
 const MAX_TOOL_ROUNDS = 3;
 // Rough speaking-rate estimate so the bot doesn't get yanked out of the
 // lobby mid-goodbye — voice.js doesn't expose "wait for playback to finish"
@@ -226,17 +225,18 @@ export async function handleLobbyText(client, message) {
   const key = sessionKey(guild.id, message.channel.id);
   let session = sessions.get(key);
   if (!session) {
+    const line = openingLine(client, guild, member);
     session = {
       guild, channel: message.channel, targetUserId: member.id,
       targetName: member.displayName, voice: false, startedAt: Date.now(),
+      history: [{ role: 'assistant', content: line }],
     };
     sessions.set(key, session);
     recordTurn(guild.id, {
-      source: 'text', channel: message.channel.name, speaker: botName(client, guild.id),
-      text: openingLine(client, guild, member),
+      source: 'text', channel: message.channel.name, speaker: botName(client, guild.id), text: line,
     });
     try {
-      await message.channel.send(openingLine(client, guild, member));
+      await message.channel.send(line);
     } catch (err) {
       console.warn('[gatekeeping] opening line post failed:', err.message);
     }
@@ -263,16 +263,29 @@ export async function handleInterviewUtterance(guild, channel, userId, text) {
 async function startInterview(member, lobbyChannel) {
   const guild = member.guild;
   const key = sessionKey(guild.id, lobbyChannel.id);
-  if (sessions.has(key)) return; // already interviewing in this channel
+  const existing = sessions.get(key);
+  if (existing && existing.targetUserId === member.id) return; // already interviewing this exact person
+
+  // Checked BEFORE the "already a session in this channel" case used to be
+  // checked — the lobby voice channel and lobby text channel are each one
+  // shared room, so a second person can easily be sitting in the same
+  // channel as whoever's already mid-interview. Keying only off the channel
+  // meant that case fell through to nothing at all: the first person's
+  // session already occupied that key, so the second person was silently
+  // dropped instead of queued. What actually determines whether Max is
+  // free is activeGuild (is he busy with ANYONE in this guild right now),
+  // not whether this particular channel already has a session in it.
   if (activeGuild.has(guild.id)) {
-    // Max can only be in one voice channel per guild — queue rather than
-    // interrupt whoever he's already talking to.
     const list = queues.get(guild.id) || [];
     if (!list.some((q) => q.member.id === member.id)) list.push({ member, channel: lobbyChannel });
     queues.set(guild.id, list);
+    const ack = `hang tight ${member} — i'm finishing up with someone else, i'll be right with you.`;
     try {
-      await lobbyChannel.send(`hang tight ${member} — i'm finishing up with someone else, i'll be right with you.`);
+      await lobbyChannel.send(ack);
     } catch { /* best effort */ }
+    // Best-effort: speakInVoice() silently no-ops if he's already mid-reply
+    // to the current interviewee, which is fine — the text ack still landed.
+    await voice.speakInVoice(guild, ack).catch(() => {});
     return;
   }
 
@@ -285,14 +298,21 @@ async function startInterview(member, lobbyChannel) {
     return;
   }
 
+  const line = openingLine(guild.client, guild, member);
   const session = {
     guild, channel: lobbyChannel, targetUserId: member.id, targetName: member.displayName,
     voice: true, startedAt: Date.now(), turns: 0,
+    // This interview's own message history, separate from conversation.js's
+    // shared per-guild buffer. It's still recorded there too (below) for the
+    // general transcript/log, but the model's context for THIS interview is
+    // built only from this array — otherwise anything anyone else says in
+    // the lobby channel while this interview is live (small talk, a second
+    // person waiting their turn) bleeds into this person's answers.
+    history: [{ role: 'assistant', content: line }],
   };
   sessions.set(key, session);
   activeGuild.set(guild.id, key);
 
-  const line = openingLine(guild.client, guild, member);
   recordTurn(guild.id, { source: 'voice', channel: lobbyChannel.name, speaker: botName(guild.client, guild.id), text: line });
   try {
     await lobbyChannel.send(line);
@@ -305,15 +325,18 @@ async function startInterview(member, lobbyChannel) {
 async function runInterviewTurn(session, { userId, name, text, speak }) {
   const { guild, channel } = session;
   session.turns = (session.turns || 0) + 1;
+  // Still written to the shared guild-wide log for the general
+  // transcript/dashboard — just not what the model reads back. See the
+  // history field's comment in startInterview for why.
   recordTurn(guild.id, {
     source: speak ? 'voice' : 'text', channel: channel.name, speaker: name, text,
   });
+  session.history.push({ role: 'user', content: text });
 
   const systemPrompt = interviewSystemPrompt(guild.client, guild, session.targetName)
     + (session.turns > 8
       ? "\n\nYou've been at this a while — wrap up with submit_vetting_recommendation now."
       : '');
-  const transcript = formatForPrompt(guild.id, CONTEXT_TURNS);
 
   let concluded = false;
   let recommendation = null;
@@ -329,10 +352,7 @@ async function runInterviewTurn(session, { userId, name, text, speak }) {
   try {
     reply = await chat([
       { role: 'system', content: systemPrompt },
-      {
-        role: 'user',
-        content: `[lobby interview transcript, #${channel.name}]\n${transcript}`,
-      },
+      ...session.history,
     ], {
       model: db.getSetting(guild.id, 'ai_model'),
       tools: TOOL_SCHEMAS,
@@ -349,6 +369,7 @@ async function runInterviewTurn(session, { userId, name, text, speak }) {
     return;
   }
   if (!reply) return;
+  session.history.push({ role: 'assistant', content: reply });
 
   recordTurn(guild.id, { source: speak ? 'voice' : 'text', channel: channel.name, speaker: botName(guild.client, guild.id), text: reply });
   try {
