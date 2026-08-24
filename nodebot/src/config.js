@@ -130,7 +130,7 @@ export const VOICE_PHRASES_FROM_ENV = {
 // word. 0 disables follow-up mode outright. Per-guild override lives in
 // db.js DEFAULTS as voice_followup_window_sec.
 export const VOICE_FOLLOWUP_WINDOW_SEC = parseInt(
-  process.env.VOICE_FOLLOWUP_WINDOW_SEC || '25', 10,
+  process.env.VOICE_FOLLOWUP_WINDOW_SEC || '5', 10,
 );
 
 // Voice noise gate — utterances shorter than MIN_UTTERANCE_SEC seconds, or

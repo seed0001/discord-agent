@@ -986,7 +986,7 @@ async function renderSettings() {
               after ${esc(botLabel(settings))} finishes speaking</label>
             <label class="field"><span class="lbl">Follow-up window (seconds)</span>
               <input id="s-voice_followup_window_sec" type="number" min="0" max="120"
-                value="${settings.voice_followup_window_sec ?? 25}"></label>
+                value="${settings.voice_followup_window_sec ?? 5}"></label>
             <span class="muted">How long after ${esc(botLabel(settings))} stops talking anyone can keep
               the conversation going without saying the wake word again. Each real answer re-arms it.
               Set to 0 to require the wake word every time.</span>

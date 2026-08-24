@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   matchesAny, describeToolCalls, isPass,
   isFollowUpOpen, openFollowUp, closeFollowUp, _resetForTests,
+  ENGAGED_STOP_SPEAKING_WORDS, ENGAGED_STOP_LISTENING_WORDS,
 } from '../src/voice.js';
 import { normalizePhrase } from '../src/phrases.js';
 import {
@@ -132,6 +133,18 @@ test('the default stop phrases are already in canonical form', () => {
   // dashboard. Keep them written the way they end up.
   for (const w of [...VOICE_STOP_SPEAKING_WORDS, ...VOICE_STOP_LISTENING_WORDS]) {
     assert.equal(normalizePhrase(w), w, `not in canonical form: ${w}`);
+  }
+});
+
+// Name-free fallback, only meant to apply once the bot is already engaged
+// (see handleUtterance's `engaged` check) — a bare "stop listening" said
+// mid-conversation should not need the wake word repeated back at it.
+test('the name-free fallback phrases match without the bot\'s name', () => {
+  for (const said of ['stop listening', 'go to sleep', "we're done", 'that is all']) {
+    assert.equal(matchesAny(said, ENGAGED_STOP_LISTENING_WORDS), true, said);
+  }
+  for (const said of ['stop talking', 'shut up', 'quiet down']) {
+    assert.equal(matchesAny(said, ENGAGED_STOP_SPEAKING_WORDS), true, said);
   }
 });
 

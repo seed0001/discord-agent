@@ -55,6 +55,20 @@ const WAKE_GRACE_MS = 1_000;              // window for an instant "never mind"
 const PLAYBACK_WAIT_MS = 120_000;
 const REPEAT_SUPPRESS_MS = 45_000;
 const REPEAT_MAX_CHARS = 30;
+// Fallback stop phrases that work without the bot's name, used only while
+// it is already engaged (a pending wake or an open follow-up window). The
+// configured voice_stop_listening_words / voice_stop_speaking_words default
+// to name-prefixed forms ("max stop listening"), which is the right call
+// for waking it from cold — but nobody says a wake word mid-conversation to
+// end one, so a bare "stop listening" was falling through to the LLM, which
+// would answer in character ("okay, I'll stop listening") without the
+// window actually closing. Not name-gated at all times because that would
+// make ordinary background chatter ("shut up", "that's all") a false
+// trigger whenever the bot isn't already listening for anyone.
+export const ENGAGED_STOP_SPEAKING_WORDS = ['stop speaking', 'stop talking', 'be quiet', 'shut up', 'quiet down'];
+export const ENGAGED_STOP_LISTENING_WORDS = [
+  'stop listening', 'go to sleep', 'we are done', "we're done", 'that is all', "that's all",
+];
 const CONTEXT_TURNS = 40;
 // Context handed to the stage-1 mention classifier. Much smaller than
 // CONTEXT_TURNS: it only needs enough to tell a name from a similar word,
@@ -393,8 +407,15 @@ async function handleUtterance(guild, channel, userId, pcm) {
   // them: "max stop" is well under REPEAT_MAX_CHARS, so saying it twice in a
   // row — exactly what someone does when the first one seems not to have
   // landed — would see the second discarded as a noise blip.
-  const stopsSpeaking = matchesAny(text, voicePhrases(guild.client, guild.id, 'voice_stop_speaking_words'));
-  const stopsListening = matchesAny(text, voicePhrases(guild.client, guild.id, 'voice_stop_listening_words'));
+  //
+  // "engaged" widens the match to the name-free fallback list — see
+  // ENGAGED_STOP_LISTENING_WORDS above for why that's safe here but not
+  // unconditionally.
+  const engaged = Boolean(pendingWake.get(channel.id)) || isFollowUpOpen(channel.id);
+  const stopsSpeaking = matchesAny(text, voicePhrases(guild.client, guild.id, 'voice_stop_speaking_words'))
+    || (engaged && matchesAny(text, ENGAGED_STOP_SPEAKING_WORDS));
+  const stopsListening = matchesAny(text, voicePhrases(guild.client, guild.id, 'voice_stop_listening_words'))
+    || (engaged && matchesAny(text, ENGAGED_STOP_LISTENING_WORDS));
 
   // Repeated short phrases from the same user in quick succession are
   // noise-gate hallucinations, not someone actually talking.
