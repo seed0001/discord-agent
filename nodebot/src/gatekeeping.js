@@ -19,6 +19,7 @@ import {
 } from 'discord.js';
 import * as db from './db.js';
 import * as voice from './voice.js';
+import { OWNER_ID } from './config.js';
 import { chat, OpenRouterError } from './openrouter.js';
 import { InsufficientCreditsError } from './credits/index.js';
 import { recordTurn, formatForPrompt } from './conversation.js';
@@ -357,12 +358,10 @@ async function runInterviewTurn(session, { userId, name, text, speak }) {
   }
   if (speak) await voice.speakInVoice(guild, reply);
 
-  if (concluded) await endInterview(session, reply, speak);
+  if (concluded) await endInterview(session, reply, speak, recommendation);
 }
 
-async function postRecommendation(session, rec) {
-  const { guild } = session;
-  const modChannelId = db.getSetting(guild.id, 'gatekeeping_mod_channel');
+function recommendationEmbed(session, rec) {
   const color = rec.recommendation === 'approve' ? 0x23A559
     : rec.recommendation === 'reject' ? 0xDA373C : 0xF0B232;
   const embed = new EmbedBuilder()
@@ -379,23 +378,49 @@ async function postRecommendation(session, rec) {
     )
     .setFooter({ text: `user id: ${session.targetUserId}` })
     .setTimestamp();
+  return embed;
+}
+
+async function postRecommendation(session, rec) {
+  const { guild } = session;
+  const modChannelId = db.getSetting(guild.id, 'gatekeeping_mod_channel');
+  const embed = recommendationEmbed(session, rec);
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`vet:approve:${session.targetUserId}`).setLabel('Approve').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`vet:reject:${session.targetUserId}`).setLabel('Reject').setStyle(ButtonStyle.Danger),
   );
   const modChannel = modChannelId ? guild.channels.cache.get(String(modChannelId)) : null;
-  if (!modChannel) {
-    console.warn('[gatekeeping] no mod channel configured — recommendation was not posted anywhere');
-    return;
+  if (modChannel) {
+    try {
+      await modChannel.send({ embeds: [embed], components: [row] });
+    } catch (err) {
+      console.warn('[gatekeeping] posting recommendation failed:', err.message);
+    }
+  } else {
+    console.warn('[gatekeeping] no mod channel configured — recommendation was not posted to a channel');
   }
+
+  // DM the owner too — the mod channel is the durable, actionable record
+  // (it has the buttons), but a DM means Travis hears about it without
+  // needing to be watching that channel. No buttons here: acting from a DM
+  // interaction would arrive with no guild context to resolve the member
+  // against, so the DM points back at the mod channel (or /giverole,
+  // /kick — whatever he'd rather do by hand) instead of duplicating them.
+  if (!OWNER_ID) return;
   try {
-    await modChannel.send({ embeds: [embed], components: [row] });
+    const owner = await guild.client.users.fetch(OWNER_ID);
+    const modChannelLink = modChannel ? `<#${modChannel.id}>` : 'the mod channel (none configured)';
+    await owner.send({
+      content: `**${session.targetName}** just went through the lobby interview in **${guild.name}** — recommendation: **${rec.recommendation}**.\n`
+        + `Approve/reject from the buttons in ${modChannelLink}, or handle it yourself.`,
+      embeds: [embed],
+    });
   } catch (err) {
-    console.warn('[gatekeeping] posting recommendation failed:', err.message);
+    console.warn('[gatekeeping] DM to owner failed:', err.message);
   }
 }
 
-async function endInterview(session, farewell, spoke) {
+async function endInterview(session, farewell, spoke, rec) {
   const { guild, channel } = session;
   const key = sessionKey(guild.id, channel.id);
   sessions.delete(key);
@@ -404,7 +429,20 @@ async function endInterview(session, farewell, spoke) {
   const leave = async () => {
     if (session.voice) {
       voice.leaveRequestedGuild(guild);
-      voice.rebalanceAll(guild.client).catch(() => {});
+      await voice.rebalanceAll(guild.client).catch(() => {});
+      // If that just landed Max in a channel the owner's actually sitting
+      // in, say the rundown out loud rather than making him go check a
+      // channel — same "jump back in and let me know" flow as any other
+      // owner-facing announcement.
+      if (rec && OWNER_ID) {
+        const dest = guild.members.me?.voice?.channelId
+          && guild.channels.cache.get(guild.members.me.voice.channelId);
+        if (dest?.members?.has(OWNER_ID)) {
+          const blurb = `hey, quick update — ${session.targetName} just went through the lobby interview. `
+            + `my read: ${rec.recommendation}. ${rec.reasoning || ''}`.trim();
+          await voice.speakInVoice(guild, blurb).catch(() => {});
+        }
+      }
     }
     const list = queues.get(guild.id);
     const next = list?.shift();
