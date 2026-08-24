@@ -12,6 +12,12 @@
 //               not to butt in" sound exactly alike, and people repeat
 //               themselves at a bot that already made a decision.
 //
+// A fourth moment lives outside that trio:
+//
+//   stopped_listening — the follow-up window (see voice.js's followUp state)
+//               just closed, whether it timed out or someone said the words.
+//               Without this, "is he still listening right now" is a guess.
+//
 // Each can be a synthesized tone (earcon.js — always available), a sound from
 // the server's own Discord soundboard, or nothing.
 import { botName } from './botName.js';
@@ -19,7 +25,7 @@ import { playEarcon, EARCONS } from './earcon.js';
 import * as db from './db.js';
 
 /** Settings keys, in the order the dashboard shows them. */
-export const CUE_EVENTS = ['thinking', 'engaging', 'declined'];
+export const CUE_EVENTS = ['thinking', 'engaging', 'declined', 'stopped_listening'];
 
 export const cueSettingKey = (event) => `voice_cue_${event}`;
 

@@ -999,7 +999,9 @@ async function renderSettings() {
             ${cueField("thinking", "Heard its name, deciding", settings, sounds)}
             ${cueField("engaging", "About to answer", settings, sounds)}
             ${cueField("declined", "Decided it wasn't being addressed", settings, sounds)}
-            <span class="muted">Short tones or soundboard sounds while smart detection runs.
+            ${cueField("stopped_listening", "Follow-up window closed", settings, sounds)}
+            <span class="muted">Short tones or soundboard sounds for what it's doing, including
+              when the follow-up window (Voice tab) closes and it goes back to needing the wake word.
               ${sounds.length ? "" : "<em>No soundboard sounds found in this server.</em>"}</span>
           </div>
         </section>
@@ -1189,6 +1191,7 @@ async function renderSettings() {
       voice_cue_thinking: readCue("thinking"),
       voice_cue_engaging: readCue("engaging"),
       voice_cue_declined: readCue("declined"),
+      voice_cue_stopped_listening: readCue("stopped_listening"),
       log_channel: $("#s-log_channel").value || null,
     };
     await api(`/guilds/${state.guildId}/settings`, { method: "PUT", body });

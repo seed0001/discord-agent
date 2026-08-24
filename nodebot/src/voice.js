@@ -136,6 +136,12 @@ const followUpUntil = new Map();     // channelId -> ms timestamp the window shu
 // "Max, stop listening" said while he is still speaking actually sticks,
 // instead of being undone by the arm that fires when playback ends.
 const followUpEpoch = new Map();     // channelId -> int
+// The natural-expiry tone: armFollowUp() sets one for `seconds` out whenever
+// it opens a window, so the room hears the same "stopped listening" cue
+// whether the window timed out or someone said the words. Re-arming or an
+// explicit close both replace/clear this before it fires, so it only ever
+// goes off once per window.
+const followUpTimer = new Map();     // channelId -> Timeout
 
 /** Is the follow-up window open on this channel — i.e. can someone speak to
  * Max right now without saying the wake word? */
@@ -155,6 +161,21 @@ export function openFollowUp(channelId, seconds, now = Date.now()) {
 export function closeFollowUp(channelId) {
   followUpUntil.delete(channelId);
   followUpEpoch.set(channelId, (followUpEpoch.get(channelId) || 0) + 1);
+  const timer = followUpTimer.get(channelId);
+  if (timer) {
+    clearTimeout(timer);
+    followUpTimer.delete(channelId);
+  }
+}
+
+/** Play the "he's stopped listening" cue. Shared by the natural-expiry timer
+ * and the explicit "stop listening" phrase so both sound identical. */
+async function announceStoppedListening(guild, channel) {
+  try {
+    await playCue(guild, channel, 'stopped_listening', { players });
+  } catch (err) {
+    console.error('[voice] stopped-listening cue failed:', err?.message || err);
+  }
 }
 
 /** Cut Max off mid-sentence: kill playback and abort anything in flight.
@@ -470,8 +491,10 @@ async function handleUtterance(guild, channel, userId, pcm) {
   // playing gets to finish its sentence; what stops is him treating the next
   // utterance as his to answer.
   if (stopsListening) {
+    const wasOpen = isFollowUpOpen(channel.id);
     closeFollowUp(channel.id);
     console.log(`[voice] [#${channel.name}] follow-up ended by ${name}: ${text}`);
+    if (wasOpen) announceStoppedListening(guild, channel);
     return;
   }
 
@@ -571,6 +594,16 @@ async function armFollowUp(channel, spoke, epoch) {
 
   openFollowUp(channel.id, seconds);
   console.log(`[voice] [#${channel.name}] listening for a follow-up for ${seconds}s`);
+
+  const existingTimer = followUpTimer.get(channel.id);
+  if (existingTimer) clearTimeout(existingTimer);
+  followUpTimer.set(channel.id, setTimeout(() => {
+    followUpTimer.delete(channel.id);
+    // Only announce if nothing re-armed or force-closed the window since —
+    // both of those already replaced/cleared this timer, but the check is a
+    // cheap backstop against a race between clearTimeout and the callback.
+    if (!isFollowUpOpen(channel.id)) announceStoppedListening(guild, channel);
+  }, seconds * 1000));
 }
 
 async function respond(channel, speakerName, speakerId, state, { followUp = false, mention = null } = {}) {
@@ -871,6 +904,8 @@ export function leaveRequestedGuild(guild) {
 export function _resetForTests() {
   followUpUntil.clear();
   followUpEpoch.clear();
+  for (const timer of followUpTimer.values()) clearTimeout(timer);
+  followUpTimer.clear();
   lastWake.clear();
   lastText.clear();
   pendingWake.clear();

@@ -96,10 +96,11 @@ test('null and junk parse without throwing on the hot path', () => {
   assert.deepEqual(parseCue({ mode: 'nonsense' }), { mode: 'tone' });
 });
 
-test('defaults: thinking and engaging on, declined off', withDb(() => {
+test('defaults: thinking, engaging and stopped_listening on, declined off', withDb(() => {
   assert.equal(cueFor('1', 'thinking').mode, 'tone');
   assert.equal(cueFor('1', 'engaging').mode, 'tone');
   assert.equal(cueFor('1', 'declined').mode, 'off');
+  assert.equal(cueFor('1', 'stopped_listening').mode, 'tone');
 }));
 
 // -- playback routing --------------------------------------------------------

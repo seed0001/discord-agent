@@ -185,6 +185,10 @@ export const DEFAULTS = {
   voice_cue_thinking: { mode: 'tone' },
   voice_cue_engaging: { mode: 'tone' },
   voice_cue_declined: { mode: 'off' },
+  // On by default, unlike 'declined': this is the one people actually asked
+  // for — an audible "he's stopped listening" so nobody has to guess whether
+  // the follow-up window is still open.
+  voice_cue_stopped_listening: { mode: 'tone' },
   // Per-server spoken-voice overrides. null = use deployment env (FISH_* /
   // EDGE_TTS_VOICE on Railway). The API key itself stays env-only.
   fish_voice_id: null,

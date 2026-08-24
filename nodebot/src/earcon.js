@@ -87,6 +87,15 @@ export const EARCONS = {
     { freq: 0, ms: 20 },
     { freq: 392.0, ms: 110, gain: 0.12 },
   ],
+  // "The follow-up window just closed — say the wake word again." A longer
+  // fall than 'declined' and pitched a fifth lower, so the two don't get
+  // confused: 'declined' is about one guess, this is the whole conversation
+  // ending.
+  stopped_listening: [
+    { freq: 440.0, ms: 90, gain: 0.16 },
+    { freq: 0, ms: 30 },
+    { freq: 293.66, ms: 140, gain: 0.16 },
+  ],
 };
 
 // Rendering is deterministic, so each tone is built once and reused.
