@@ -17,6 +17,7 @@ import { GITHUB_TOOL_SCHEMAS } from '../src/github.js';
 import { REPO_TOOL_SCHEMAS } from '../src/textChat.js';
 import { RECALL_TOOL_SCHEMA } from '../src/memory.js';
 import { TOOL_SCHEMAS as AGENT_TOOL_SCHEMAS } from '../src/agentTools.js';
+import { CALENDAR_TOOL_SCHEMAS } from '../src/calendar.js';
 
 const guild = { id: '111', name: 'Test Server', memberCount: 42 };
 
@@ -109,13 +110,14 @@ test('commandList is sorted and survives a client with no commands', async () =>
 const REAL_TOOLS = new Set([
   ...TOOL_SCHEMAS, ...KB_TOOL_SCHEMAS, ...GITHUB_TOOL_SCHEMAS,
   ...REPO_TOOL_SCHEMAS, RECALL_TOOL_SCHEMA, ...AGENT_TOOL_SCHEMAS,
+  ...CALENDAR_TOOL_SCHEMAS,
 ].map((t) => t.function.name));
 
 test('every tool the capability prompt names actually exists', () => {
   // Catches the failure this prompt exists to prevent: the Python original
   // advertised sandbox_* tools and eight slash commands this bot never had.
   const named = CAPABILITY_PROMPT.match(
-    /\b(?:kb|github|repo|sandbox)_[a-z_]+|\bweb_search\b|\brecall_chat_log\b/g,
+    /\b(?:kb|github|repo|sandbox|calendar)_[a-z_]+|\bweb_search\b|\brecall_chat_log\b/g,
   ) || [];
   // Tools whose names don't fit the prefix conventions above still have to be
   // real — the point of this test is that nothing in the prompt is a promise

@@ -124,11 +124,27 @@ CREATE TABLE IF NOT EXISTS songs (
     created_by TEXT,
     created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS calendar_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id    TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    details     TEXT,
+    next_fire   INTEGER NOT NULL,
+    recurrence  TEXT NOT NULL DEFAULT 'once',
+    channel_id  TEXT NOT NULL,
+    mention     TEXT,
+    created_by  TEXT NOT NULL,
+    active      INTEGER NOT NULL DEFAULT 1,
+    last_fired  INTEGER,
+    created_at  INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_warnings_guild_user ON warnings (guild_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_logs_guild ON mod_logs (guild_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_memver ON memory_versions (guild_id, kind, version);
 CREATE INDEX IF NOT EXISTS idx_turns_guild_consolidated ON turns (guild_id, consolidated);
 CREATE INDEX IF NOT EXISTS idx_songs_guild ON songs (guild_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_calendar_fire ON calendar_events (active, next_fire);
+CREATE INDEX IF NOT EXISTS idx_calendar_guild ON calendar_events (guild_id, active, next_fire);
 `;
 
 export const MEMORY_VERSIONS_KEPT = 10;
@@ -198,6 +214,10 @@ export const DEFAULTS = {
   tts_strip_markdown: true,
   quiet_mode: false,
   log_channel: null,
+  // IANA timezone name (e.g. "America/Chicago") used to interpret and display
+  // calendar/reminder times. "UTC" until an admin sets it — see calendar.js
+  // and the /calendar command. A bad value falls back to UTC at use time.
+  calendar_timezone: 'UTC',
   // welcome / goodbye / autorole
   welcome_channel: null,
   welcome_message: 'Welcome {user} to {server}! You are member #{membercount}.',
@@ -642,4 +662,78 @@ export function addLog(guildId, action, actor, target, reason) {
 export function getLogs(guildId, limit = 100) {
   return db.prepare('SELECT * FROM mod_logs WHERE guild_id = ? ORDER BY created_at DESC LIMIT ?')
     .all(String(guildId), limit);
+}
+
+// -- calendar events / reminders --------------------------------------------
+// One row is a scheduled thing that fires into a Discord channel at next_fire
+// (unix seconds). recurrence 'once' deactivates the row after it fires;
+// anything else is rolled forward by calendar.js. See calendar.js for the
+// tools, the scheduler tick, and how next_fire is computed.
+
+export function calendarAdd(guildId, {
+  title, details, nextFire, recurrence = 'once', channelId, mention, createdBy,
+}) {
+  const result = db.prepare(
+    'INSERT INTO calendar_events '
+    + '(guild_id, title, details, next_fire, recurrence, channel_id, mention, created_by, active, created_at) '
+    + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)',
+  ).run(String(guildId), title, details ?? null, Math.floor(nextFire), recurrence,
+    String(channelId), mention ?? null, String(createdBy), now());
+  return Number(result.lastInsertRowid);
+}
+
+export function calendarGet(guildId, id) {
+  return db.prepare('SELECT * FROM calendar_events WHERE guild_id = ? AND id = ?')
+    .get(String(guildId), Number(id)) || null;
+}
+
+/** Active events for one guild, soonest first. */
+export function calendarList(guildId, limit = 25) {
+  return db.prepare(
+    'SELECT * FROM calendar_events WHERE guild_id = ? AND active = 1 ORDER BY next_fire ASC LIMIT ?',
+  ).all(String(guildId), limit);
+}
+
+/** Every active event due at or before `ts`, across all guilds — the tick
+ * reads this, resolves each guild/channel from the client, and rolls the row
+ * forward (or deactivates it). */
+export function calendarDue(ts) {
+  return db.prepare(
+    'SELECT * FROM calendar_events WHERE active = 1 AND next_fire <= ? ORDER BY next_fire ASC',
+  ).all(Math.floor(ts));
+}
+
+export function calendarUpdate(guildId, id, fields) {
+  const allowed = ['title', 'details', 'next_fire', 'recurrence', 'channel_id', 'mention'];
+  const sets = [];
+  const params = [];
+  for (const key of allowed) {
+    if (fields[key] === undefined) continue;
+    sets.push(`${key} = ?`);
+    params.push(fields[key]);
+  }
+  if (!sets.length) return false;
+  params.push(String(guildId), Number(id));
+  const result = db.prepare(
+    `UPDATE calendar_events SET ${sets.join(', ')} WHERE guild_id = ? AND id = ?`,
+  ).run(...params);
+  return result.changes > 0;
+}
+
+/** Roll a recurring event forward to its next occurrence. */
+export function calendarReschedule(id, nextFire, lastFired) {
+  db.prepare('UPDATE calendar_events SET next_fire = ?, last_fired = ? WHERE id = ?')
+    .run(Math.floor(nextFire), Math.floor(lastFired), Number(id));
+}
+
+/** Mark an event done (a fired 'once', or a row whose guild/channel is gone). */
+export function calendarDeactivate(id, lastFired = null) {
+  db.prepare('UPDATE calendar_events SET active = 0, last_fired = COALESCE(?, last_fired) WHERE id = ?')
+    .run(lastFired === null ? null : Math.floor(lastFired), Number(id));
+}
+
+export function calendarDelete(guildId, id) {
+  const result = db.prepare('DELETE FROM calendar_events WHERE guild_id = ? AND id = ?')
+    .run(String(guildId), Number(id));
+  return result.changes > 0;
 }

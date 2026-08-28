@@ -9,6 +9,7 @@ import * as antispam from './antispam.js';
 import * as welcome from './welcome.js';
 import * as memory from './memory.js';
 import * as proactive from './proactive.js';
+import * as calendar from './calendar.js';
 import * as logbuffer from './logbuffer.js';
 import { startDashboard, applyPresence } from './web/server.js';
 import * as backendCatalog from './backends/catalog.js';
@@ -64,6 +65,8 @@ client.once(Events.ClientReady, (c) => {
   voice.init(c);
   // Pressure decay/flow runs on its own clock, independent of message traffic.
   proactive.startTicker(c);
+  // Calendar/reminder scheduler — polls for due events and posts them.
+  calendar.startTicker(c);
   applyPresence(c);
   startDashboard(c);
   // Keep the list of available OpenRouter models fresh, so there is something

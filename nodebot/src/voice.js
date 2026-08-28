@@ -32,6 +32,7 @@ import { TOOL_SCHEMAS, runTool } from './tools.js';
 import { KB_TOOL_SCHEMAS, runTool as runKbTool } from './knowledge.js';
 import * as channelBrains from './channelBrains.js';
 import * as agentTools from './agentTools.js';
+import * as calendar from './calendar.js';
 import * as mediaTools from './mediaTools.js';
 import * as musicTools from './musicTools.js';
 import * as github from './github.js';
@@ -104,6 +105,9 @@ const ACTION_BLURBS = {
   stop_music: () => 'stopping the music',
   save_song: (a) => `saving that as "${a.title}"`,
   delete_song: (a) => `removing "${a.song}" from the library`,
+  calendar_add: (a) => `scheduling a reminder${a.title ? ` for ${a.title}` : ''}`,
+  calendar_update: (a) => `updating reminder ${a.id}`,
+  calendar_cancel: (a) => `cancelling reminder ${a.id}`,
 };
 
 /** Turn raw OpenRouter tool_calls into one short, speakable "on it" line,
@@ -656,6 +660,7 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
   const baseTools = [
     ...TOOL_SCHEMAS, ...KB_TOOL_SCHEMAS, memory.RECALL_TOOL_SCHEMA,
     ...github.GITHUB_TOOL_SCHEMAS, ...REPO_TOOL_SCHEMAS,
+    ...calendar.CALENDAR_TOOL_SCHEMAS,
   ];
   // Generation is not an owner privilege the way moderation is — a guild can
   // open it to everyone — so the media schemas ride on canGenerate alone.
@@ -672,6 +677,8 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
     if (name.startsWith('github_')) return github.runGithubTool(name, args);
     if (name.startsWith('repo_')) return runRepoTool(name, args);
     if (name.startsWith('kb_')) return runKbTool(guild.id, name, args);
+    // Open to everyone: calendar.execute re-checks its own owner-only bits.
+    if (calendar.isCalendarTool(name)) return calendar.execute(fakeMessage, name, args, owner);
     if (owner && name in agentTools.TOOLS) return agentTools.execute(null, fakeMessage, name, args);
     // No owner check: mediaTools.execute re-checks access itself, so gating
     // here would only duplicate it — and get it wrong for open guilds.

@@ -9,6 +9,7 @@ import { recordTurn, formatForPrompt } from './conversation.js';
 import { TOOL_SCHEMAS, runTool } from './tools.js';
 import { KB_TOOL_SCHEMAS, runTool as runKbTool } from './knowledge.js';
 import * as agentTools from './agentTools.js';
+import * as calendar from './calendar.js';
 import * as mediaTools from './mediaTools.js';
 import * as musicTools from './musicTools.js';
 import * as channelBrains from './channelBrains.js';
@@ -107,6 +108,9 @@ function toolHandler(client, message, owner) {
     if (name.startsWith('github_')) return github.runGithubTool(name, args);
     if (name.startsWith('repo_')) return runRepoTool(name, args);
     if (name.startsWith('kb_')) return runKbTool(message.guild.id, name, args);
+    // Open to everyone: calendar.execute re-checks the owner-only bits
+    // (pinging others/@everyone, another channel, editing someone else's).
+    if (calendar.isCalendarTool(name)) return calendar.execute(message, name, args, owner);
     if (owner && name in agentTools.TOOLS) return agentTools.execute(client, message, name, args);
     // Not gated on owner: a guild can open generation up to everyone, and
     // mediaTools.execute re-checks that itself rather than trusting us.
@@ -215,6 +219,7 @@ export async function handleMessage(client, message) {
   const baseTools = [
     ...TOOL_SCHEMAS, ...KB_TOOL_SCHEMAS, memory.RECALL_TOOL_SCHEMA,
     ...github.GITHUB_TOOL_SCHEMAS, ...REPO_TOOL_SCHEMAS,
+    ...calendar.CALENDAR_TOOL_SCHEMAS,
   ];
   // Media schemas hang off canGenerate, not owner — generation can be opened
   // to a whole guild, so the two permissions stack independently.
