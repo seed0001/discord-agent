@@ -100,20 +100,21 @@ test('knowledge base save/get/list/search/delete', withDb(() => {
 
 // -- song library ---------------------------------------------------------------
 
-function addTestSong(guildId, title, bytes = 'AUDIO') {
+function addTestSong(guildId, title, { bytes = 'AUDIO', ownerId = '42', createdBy = '42' } = {}) {
   return db.addSong(guildId, {
     title, prompt: `a song called ${title}`, data: Buffer.from(bytes),
-    mediaType: 'audio/mpeg', length: 'short', costUsd: 0.04, createdBy: '42',
+    mediaType: 'audio/mpeg', length: 'short', costUsd: 0.04, ownerId, createdBy,
   });
 }
 
 test('addSong/listSongs/getSongData round-trip, including the audio bytes', withDb(() => {
   const id = addTestSong('1', 'Chill Vibes');
-  assert.equal(db.countSongs('1'), 1);
-  const rows = db.listSongs('1');
+  assert.equal(db.countSongs('1', '42'), 1);
+  const rows = db.listSongs('1', '42');
   assert.equal(rows.length, 1);
   assert.equal(rows[0].title, 'Chill Vibes');
   assert.equal(rows[0].id, id);
+  assert.equal(rows[0].owner_id, '42');
 
   const data = db.getSongData('1', id);
   assert.equal(data.title, 'Chill Vibes');
@@ -124,47 +125,89 @@ test('addSong/listSongs/getSongData round-trip, including the audio bytes', with
 
 test('songs are isolated per guild', withDb(() => {
   addTestSong('1', 'Guild One Song');
-  assert.equal(db.countSongs('2'), 0);
-  assert.deepEqual(db.listSongs('2'), []);
+  assert.equal(db.countSongs('2', '42'), 0);
+  assert.deepEqual(db.listSongs('2', '42'), []);
+}));
+
+test('a personal library and the server library are separate scopes', withDb(() => {
+  addTestSong('1', 'My Track', { ownerId: '42' });
+  addTestSong('1', 'House Track', { ownerId: null, createdBy: '42' });
+  assert.deepEqual(db.listSongs('1', '42').map((r) => r.title), ['My Track']);
+  assert.deepEqual(db.listSongs('1', null).map((r) => r.title), ['House Track']);
+  assert.equal(db.countSongs('1', '42'), 1);
+  assert.equal(db.countSongs('1', null), 1);
+  // an array scope unions them
+  assert.deepEqual(
+    db.listSongs('1', ['42', null]).map((r) => r.title).sort(),
+    ['House Track', 'My Track'],
+  );
 }));
 
 test('listSongs orders oldest first', withDb(() => {
   addTestSong('1', 'First');
   addTestSong('1', 'Second');
-  const titles = db.listSongs('1').map((r) => r.title);
+  const titles = db.listSongs('1', '42').map((r) => r.title);
   assert.deepEqual(titles, ['First', 'Second']);
 }));
 
-test('findSong resolves by id, exact title, and unambiguous partial title', withDb(() => {
+test('findSong resolves by id, exact title, and unambiguous partial title within scope', withDb(() => {
   const id = addTestSong('1', 'Chill Vibes');
   addTestSong('1', 'Upbeat Anthem');
-  assert.equal(db.findSong('1', String(id)).title, 'Chill Vibes');
-  assert.equal(db.findSong('1', 'chill vibes').title, 'Chill Vibes'); // case-insensitive exact
-  assert.equal(db.findSong('1', 'anthem').title, 'Upbeat Anthem'); // unambiguous partial
+  assert.equal(db.findSong('1', String(id), ['42']).title, 'Chill Vibes');
+  assert.equal(db.findSong('1', 'chill vibes', ['42']).title, 'Chill Vibes'); // case-insensitive exact
+  assert.equal(db.findSong('1', 'anthem', ['42']).title, 'Upbeat Anthem'); // unambiguous partial
+}));
+
+test('findSong will not reach a song outside the given scope', withDb(() => {
+  addTestSong('1', 'Private Track', { ownerId: '99' });
+  assert.equal(db.findSong('1', 'Private Track', ['42']), null);
+  assert.equal(db.findSong('1', 'Private Track', ['42', '99']).title, 'Private Track');
 }));
 
 test('findSong refuses to guess between two ambiguous partial matches', withDb(() => {
   addTestSong('1', 'Morning Chill');
   addTestSong('1', 'Evening Chill');
-  assert.equal(db.findSong('1', 'chill'), null);
+  assert.equal(db.findSong('1', 'chill', ['42']), null);
 }));
 
 test('findSong returns null for no match or a blank query', withDb(() => {
   addTestSong('1', 'Chill Vibes');
-  assert.equal(db.findSong('1', 'nonexistent'), null);
-  assert.equal(db.findSong('1', ''), null);
+  assert.equal(db.findSong('1', 'nonexistent', ['42']), null);
+  assert.equal(db.findSong('1', '', ['42']), null);
 }));
 
 test('deleteSong removes a row and reports whether one was actually removed', withDb(() => {
   const id = addTestSong('1', 'Chill Vibes');
   assert.equal(db.deleteSong('1', id), true);
-  assert.equal(db.countSongs('1'), 0);
+  assert.equal(db.countSongs('1', '42'), 0);
   assert.equal(db.deleteSong('1', id), false);
 }));
 
-test('SONG_LIBRARY_CAP is 10', () => {
+test('moveSong promotes a personal track into the server library', withDb(() => {
+  const id = addTestSong('1', 'Breakout', { ownerId: '42' });
+  assert.equal(db.moveSong('1', id, null), true);
+  assert.equal(db.countSongs('1', '42'), 0);
+  assert.deepEqual(db.listSongs('1', null).map((r) => r.title), ['Breakout']);
+}));
+
+test('libraryCap: personal is SONG_LIBRARY_CAP, server is SERVER_LIBRARY_CAP', () => {
   assert.equal(db.SONG_LIBRARY_CAP, 10);
+  assert.equal(db.libraryCap('42'), db.SONG_LIBRARY_CAP);
+  assert.equal(db.libraryCap(null), db.SERVER_LIBRARY_CAP);
 });
+
+test('music_prefs: shareable is off by default, toggles, and filters a member list', withDb(() => {
+  assert.equal(db.isMusicShareable('1', '42'), false);
+  db.setMusicShareable('1', '42', true);
+  assert.equal(db.isMusicShareable('1', '42'), true);
+  db.setMusicShareable('1', '42', false);
+  assert.equal(db.isMusicShareable('1', '42'), false);
+
+  db.setMusicShareable('1', 'a', true);
+  db.setMusicShareable('1', 'b', true);
+  assert.deepEqual(db.shareableUserIds('1', ['a', 'b', 'c']).sort(), ['a', 'b']);
+  assert.deepEqual(db.shareableUserIds('1', []), []);
+}));
 
 test('turns: pending until marked consolidated, never deleted after', withDb(() => {
   db.addTurn('1', 1, 'travis', '42', 'hello', 'text', 'general', 100);

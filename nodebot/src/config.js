@@ -108,8 +108,20 @@ export const VOICE_STOP_SPEAKING_WORDS = parsePhraseList(
 );
 export const VOICE_STOP_LISTENING_WORDS = parsePhraseList(
   process.env.VOICE_STOP_LISTENING_WORDS
-  || 'max stop listening,stop listening max,max go to sleep,max we are done,'
+  || 'max stop listening,stop listening max,max we are done,'
   + 'max that is all,thanks max that is all',
+);
+
+// "Leave voice entirely", as opposed to "stop listening" (which only ends the
+// follow-up window). Matched before stop-listening, and it does more: the bot
+// disconnects from the channel and sets a per-guild "stay out" flag so the
+// 30-second rebalance sweep does NOT pull it straight back in. Someone asks it
+// back with "join us in voice" (in text or by name) or from the dashboard.
+// Name-prefixed by default so an offhand "I'm going to sleep" can't eject it.
+export const VOICE_LEAVE_WORDS = parsePhraseList(
+  process.env.VOICE_LEAVE_WORDS
+  || 'max go to sleep,go to sleep max,max leave voice,max leave the voice channel,'
+  + 'max leave the call,max you can go now,max drop from voice',
 );
 
 // Which of the phrase lists above were actually pinned in the environment.
@@ -124,6 +136,7 @@ export const VOICE_PHRASES_FROM_ENV = {
   voice_cancel_words: Boolean(process.env.VOICE_CANCEL_WORDS),
   voice_stop_speaking_words: Boolean(process.env.VOICE_STOP_SPEAKING_WORDS),
   voice_stop_listening_words: Boolean(process.env.VOICE_STOP_LISTENING_WORDS),
+  voice_leave_words: Boolean(process.env.VOICE_LEAVE_WORDS),
 };
 
 // How long after the bot finishes speaking it keeps answering without the wake

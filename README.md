@@ -43,9 +43,17 @@ tools, wake pipeline, prompts, models, limitations, roadmap)
   OpenRouter) and posts it straight into the channel — a quick ~30-second
   clip or a longer structured song. Before generating, the bot asks a few
   clarifying questions (genre, mood, instruments, vocals/lyrics, clip vs
-  full song) rather than generating off the first mention of "song." Unlike
-  images/video this is **not** configurable to 'everyone': only server
-  admins, the server owner, or the bot owner can ask for one.
+  full song) rather than generating off the first mention of "song."
+  Access is a per-server role mapping (`music_roles`, `music_curator_roles`
+  on the dashboard, or granted from chat by an admin): with both lists empty
+  it stays admin/owner-only, which is the default. Every generation is
+  metered against the account's credits whether or not the result is kept.
+- Song libraries: each member keeps a **personal** library (10 songs); one
+  shared **server** library (30) is added to by curators. In voice, a member
+  who turns on sharing (`set_music_shareable`) lets other people in the same
+  channel play their saved songs — but only while they're actually in the
+  channel, and nothing is ever copied between libraries. `save_song`,
+  `list_songs`, `delete_song`, `play_song`, `play_playlist`, `stop_music`.
 - Document review: drop a file on a message that mentions the bot (or in
   an always-on AI channel) — text, markdown, code, PDFs, and Word docs are
   read automatically and folded into the conversation so the bot can
@@ -94,16 +102,23 @@ tools, wake pipeline, prompts, models, limitations, roadmap)
   share one conversation buffer, so asking about something in voice that was
   said in text works, and vice versa. The old `listener/` sidecar and the HTTP
   bridge it needed are gone — no second process, no `SIDECAR_PORT`.
-- Follow-up mode: the wake word only has to be said **once**. For 25 seconds
-  after Max finishes speaking, anyone in the channel can just keep talking and
-  he answers, and every real answer re-arms the window — so a conversation
-  carries on the way it would with a person. Two ways to end it: **"Max, stop
-  speaking"** cuts him off mid-sentence but stays in the conversation, and
-  **"Max, stop listening"** ends it and puts the wake word back. If what he
-  hears in the window plainly wasn't meant for him, he stays quiet. All of it
-  is per-server and editable from the dashboard (`voice_followup_enabled`,
-  `voice_followup_window_sec`, `voice_stop_speaking_words`,
-  `voice_stop_listening_words`); set the window to `0` to turn it off.
+- Presence by conversation, not just the dashboard: anyone can say (in text or
+  voice) "join us in voice" — he joins the asker's channel — or "leave the
+  call" / "Max, go to sleep" — he disconnects and **stays out**, no
+  auto-rejoin, until asked back or brought back from the dashboard.
+  Configurable as `voice_leave_words`; the dashboard start/stop buttons drive
+  the same `voice_sleep` flag.
+- Follow-up mode: the wake word only has to be said **once**. For a few seconds
+  after Max finishes speaking (default 5), anyone in the channel can just keep
+  talking and he answers, and every real answer re-arms the window — so a
+  conversation carries on the way it would with a person. Two ways to end it:
+  **"Max, stop speaking"** cuts him off mid-sentence but stays in the
+  conversation, and **"Max, stop listening"** ends it and puts the wake word
+  back. If what he hears in the window plainly wasn't meant for him, he stays
+  quiet. All of it is per-server and editable from the dashboard
+  (`voice_followup_enabled`, `voice_followup_window_sec`,
+  `voice_stop_speaking_words`, `voice_stop_listening_words`); set the window to
+  `0` to turn it off.
 - Phrases, not words: wake / cancel / stop lists are entered on the dashboard
   as `[hey max] [max, you around?] [yo max]` — one phrase per bracket pair, so
   a phrase can contain a comma. The old comma-separated form still parses, so
@@ -122,10 +137,10 @@ tools, wake pipeline, prompts, models, limitations, roadmap)
 
 **Credits** (only when run as a service — see below)
 - A pooled credit balance per customer account, metered against every
-  billable provider call: AI replies, background work, voice transcription
-  and Fish Audio speech. When the balance hits zero the bot stops replying
-  with AI, and moderation, automod, welcome and every slash command keep
-  working
+  billable provider call: AI replies, background work, voice transcription,
+  Fish Audio speech and music generation. When the balance hits zero the bot
+  stops replying with AI, and moderation, automod, welcome and every slash
+  command keep working
 - Customer accounts, an order form, a staff queue, and credit issued by hand
   against an out-of-band payment — there is no card processing
 

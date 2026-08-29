@@ -20,7 +20,7 @@ import * as db from './db.js';
 import { normalizePhrase, expandPhraseTemplates } from './phrases.js';
 import {
   VOICE_WAKE_WORDS, VOICE_CANCEL_WORDS,
-  VOICE_STOP_SPEAKING_WORDS, VOICE_STOP_LISTENING_WORDS,
+  VOICE_STOP_SPEAKING_WORDS, VOICE_STOP_LISTENING_WORDS, VOICE_LEAVE_WORDS,
   VOICE_PHRASES_FROM_ENV,
 } from './config.js';
 
@@ -65,8 +65,13 @@ const DERIVE = {
     `stop talking ${n}`, `${n} be quiet`, `${n} shut up`, `${n} quiet down`,
   ],
   voice_stop_listening_words: (n) => [
-    `${n} stop listening`, `stop listening ${n}`, `${n} go to sleep`,
+    `${n} stop listening`, `stop listening ${n}`,
     `${n} we are done`, `${n} that is all`, `thanks ${n} that is all`,
+  ],
+  voice_leave_words: (n) => [
+    `${n} go to sleep`, `go to sleep ${n}`, `${n} leave voice`,
+    `${n} leave the voice channel`, `${n} leave the call`,
+    `${n} you can go now`, `${n} drop from voice`,
   ],
 };
 
@@ -75,6 +80,7 @@ const ENV_DEFAULTS = {
   voice_cancel_words: VOICE_CANCEL_WORDS,
   voice_stop_speaking_words: VOICE_STOP_SPEAKING_WORDS,
   voice_stop_listening_words: VOICE_STOP_LISTENING_WORDS,
+  voice_leave_words: VOICE_LEAVE_WORDS,
 };
 
 /**

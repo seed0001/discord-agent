@@ -35,6 +35,7 @@ import * as agentTools from './agentTools.js';
 import * as calendar from './calendar.js';
 import * as mediaTools from './mediaTools.js';
 import * as musicTools from './musicTools.js';
+import * as voiceTools from './voiceTools.js';
 import * as github from './github.js';
 import * as memory from './memory.js';
 import { REPO_TOOL_SCHEMAS, runRepoTool } from './textChat.js';
@@ -68,7 +69,14 @@ const REPEAT_MAX_CHARS = 30;
 // trigger whenever the bot isn't already listening for anyone.
 export const ENGAGED_STOP_SPEAKING_WORDS = ['stop speaking', 'stop talking', 'be quiet', 'shut up', 'quiet down'];
 export const ENGAGED_STOP_LISTENING_WORDS = [
-  'stop listening', 'go to sleep', 'we are done', "we're done", 'that is all', "that's all",
+  'stop listening', 'we are done', "we're done", 'that is all', "that's all",
+];
+// Name-free "leave voice for good" fallback — same idea as the two lists
+// above (only consulted once the bot is already engaged), kept separate
+// because leaving the channel is a bigger action than ending a follow-up.
+export const ENGAGED_LEAVE_WORDS = [
+  'go to sleep', 'leave the voice channel', 'leave voice', 'leave the call',
+  'drop from voice', 'you can go now',
 ];
 const CONTEXT_TURNS = 40;
 // Context handed to the stage-1 mention classifier. Much smaller than
@@ -296,6 +304,14 @@ async function rebalance(guild) {
     return;
   }
 
+  // Told to leave and stay out (a "go to sleep" phrase, the leave_voice tool,
+  // or the dashboard stop button). Cleared by "join us in voice" or the
+  // dashboard — until then the sweep does not touch voice.
+  if (db.getSetting(guild.id, 'voice_sleep')) {
+    if (connection) leaveGuild(guild);
+    return;
+  }
+
   // Zombie detection: a connection stuck out of Ready (dead UDP, missed
   // disconnect event) is silently deaf — tear it down and rejoin.
   if (connection) {
@@ -441,13 +457,15 @@ async function handleUtterance(guild, channel, userId, pcm) {
     || (engaged && matchesAny(text, ENGAGED_STOP_SPEAKING_WORDS));
   const stopsListening = matchesAny(text, voicePhrases(guild.client, guild.id, 'voice_stop_listening_words'))
     || (engaged && matchesAny(text, ENGAGED_STOP_LISTENING_WORDS));
+  const leavesVoice = matchesAny(text, voicePhrases(guild.client, guild.id, 'voice_leave_words'))
+    || (engaged && matchesAny(text, ENGAGED_LEAVE_WORDS));
 
   // Repeated short phrases from the same user in quick succession are
   // noise-gate hallucinations, not someone actually talking.
   const normalized = text.toLowerCase().split(/\s+/).join(' ');
   const prev = lastText.get(userId);
   const now = Date.now();
-  if (!stopsSpeaking && !stopsListening
+  if (!stopsSpeaking && !stopsListening && !leavesVoice
       && prev && prev[0] === normalized && normalized.length <= REPEAT_MAX_CHARS
       && now - prev[1] < REPEAT_SUPPRESS_MS) {
     lastText.set(userId, [normalized, now]);
@@ -488,6 +506,29 @@ async function handleUtterance(guild, channel, userId, pcm) {
   if (stopsSpeaking) {
     stopSpeaking(guild, channel.id);
     console.log(`[voice] [#${channel.name}] cut off by ${name}: ${text}`);
+    return;
+  }
+
+  // "Max, go to sleep" — leave voice entirely and stay out. More than
+  // stop-listening: the connection is dropped and voice_sleep is set so the
+  // rebalance sweep won't rejoin. Checked before stopsListening because the
+  // leave phrases are the more specific intent.
+  if (leavesVoice) {
+    console.log(`[voice] [#${channel.name}] told to leave by ${name}: ${text}`);
+    closeFollowUp(channel.id);
+    db.setSetting(guild.id, 'voice_sleep', true);
+    try {
+      await channel.send('👋 Leaving voice — ask me back any time ("join us in voice").');
+    } catch { /* best effort */ }
+    // Say goodbye, let it finish playing, then disconnect.
+    const spoke = await speakInVoice(guild, 'alright, later.');
+    if (spoke) {
+      const player = players.get(guild.id);
+      if (player) {
+        try { await entersState(player, AudioPlayerStatus.Idle, 8_000); } catch { /* overran */ }
+      }
+    }
+    leaveGuild(guild);
     return;
   }
 
@@ -642,6 +683,7 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
   // while the system prompt is still being assembled.
   const fakeMessage = {
     guild, channel,
+    member: guild.members.cache.get(speakerId) || null,
     author: guild.members.cache.get(speakerId)?.user
       || { id: speakerId, tag: speakerName, username: speakerName },
   };
@@ -655,12 +697,22 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
     channel: channel.name, speaker: speakerName, followUp, mention,
   });
   if (owner) systemPrompt += VOICE_OWNER_ACTION_NOTE;
+  // What's in reach to play, so he can offer a track without calling
+  // list_songs first — only when this speaker can actually work the music.
+  if (canMakeMusic) {
+    try {
+      systemPrompt += await musicTools.voiceMusicContext(fakeMessage);
+    } catch (err) {
+      console.warn('[voice] music context failed:', err?.message || err);
+    }
+  }
   const transcript = formatForPrompt(guild.id, CONTEXT_TURNS);
 
   const baseTools = [
     ...TOOL_SCHEMAS, ...KB_TOOL_SCHEMAS, memory.RECALL_TOOL_SCHEMA,
     ...github.GITHUB_TOOL_SCHEMAS, ...REPO_TOOL_SCHEMAS,
     ...calendar.CALENDAR_TOOL_SCHEMAS,
+    ...voiceTools.TOOL_SCHEMAS,
   ];
   // Generation is not an owner privilege the way moderation is — a guild can
   // open it to everyone — so the media schemas ride on canGenerate alone.
@@ -679,6 +731,7 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
     if (name.startsWith('kb_')) return runKbTool(guild.id, name, args);
     // Open to everyone: calendar.execute re-checks its own owner-only bits.
     if (calendar.isCalendarTool(name)) return calendar.execute(fakeMessage, name, args, owner);
+    if (voiceTools.isVoiceTool(name)) return voiceTools.execute(null, fakeMessage, name, args);
     if (owner && name in agentTools.TOOLS) return agentTools.execute(null, fakeMessage, name, args);
     // No owner check: mediaTools.execute re-checks access itself, so gating
     // here would only duplicate it — and get it wrong for open guilds.
@@ -830,6 +883,16 @@ export async function speakInVoice(guild, text) {
 // still playing a beat later and refuse to start, right after promising to.
 const ANNOUNCE_WAIT_MS = 10_000;
 
+/** The voice channel this guild's connection is sitting in right now, or null
+ * if the bot isn't connected. Used by musicTools.js to work out who is in
+ * earshot — the DJ path only pulls from the libraries of people actually in
+ * the channel. */
+export function currentVoiceChannel(guild) {
+  const connection = getVoiceConnection(guild.id);
+  const channelId = connection?.joinConfig?.channelId;
+  return channelId ? (guild.channels.cache.get(channelId) || null) : null;
+}
+
 /** Start playing a list of {title, data, mediaType} songs back to back in
  * this guild's current voice channel. Returns false — does nothing — if the
  * bot isn't connected, or the player is still busy after ANNOUNCE_WAIT_MS
@@ -905,6 +968,41 @@ export async function joinRequestedChannel(channel) {
 export function leaveRequestedGuild(guild) {
   manualHold.delete(guild.id);
   leaveGuild(guild);
+}
+
+// -- conversational presence control (join_voice / leave_voice tools) --------
+
+/** Leave voice and stay out until asked back — the tool/dashboard equivalent
+ * of a "go to sleep" phrase. Sets voice_sleep so the rebalance sweep won't
+ * rejoin. */
+export function sleepGuild(guild) {
+  db.setSetting(guild.id, 'voice_sleep', true);
+  manualHold.delete(guild.id);
+  leaveGuild(guild);
+}
+
+/**
+ * Clear the "stay out" flag and get back into voice.
+ *
+ * With a channel: join that one (respecting voice_channel_allowlist, same as
+ * /voicejoin). Without: run a rebalance so the bot picks the busiest occupied
+ * allowed channel right now.
+ *
+ * @returns {Promise<{joined: boolean, channel: string|null, reason?: string}>}
+ */
+export async function wakeGuild(guild, channel = null) {
+  db.setSetting(guild.id, 'voice_sleep', false);
+  if (channel) {
+    const ok = await joinRequestedChannel(channel);
+    return ok
+      ? { joined: true, channel: channel.name }
+      : { joined: false, channel: null, reason: 'not-allowed' };
+  }
+  await rebalance(guild);
+  const current = currentVoiceChannel(guild);
+  return current
+    ? { joined: true, channel: current.name }
+    : { joined: false, channel: null, reason: 'no-one-in-voice' };
 }
 
 /** Test seam: drop all in-process follow-up state. */

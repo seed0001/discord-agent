@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import {
   matchesAny, describeToolCalls, isPass,
   isFollowUpOpen, openFollowUp, closeFollowUp, _resetForTests,
-  ENGAGED_STOP_SPEAKING_WORDS, ENGAGED_STOP_LISTENING_WORDS,
+  ENGAGED_STOP_SPEAKING_WORDS, ENGAGED_STOP_LISTENING_WORDS, ENGAGED_LEAVE_WORDS,
 } from '../src/voice.js';
 import { normalizePhrase } from '../src/phrases.js';
 import {
-  VOICE_STOP_SPEAKING_WORDS, VOICE_STOP_LISTENING_WORDS,
+  VOICE_STOP_SPEAKING_WORDS, VOICE_STOP_LISTENING_WORDS, VOICE_LEAVE_WORDS,
 } from '../src/config.js';
 
 function toolCall(name, args) {
@@ -120,10 +120,18 @@ test('the default stop-speaking phrases match how people actually say them', () 
 });
 
 test('the default stop-listening phrases match how people actually say them', () => {
-  for (const said of ['Max, stop listening.', 'max go to sleep',
-    'alright max we are done', 'stop listening max']) {
+  for (const said of ['Max, stop listening.', 'alright max we are done', 'stop listening max']) {
     assert.equal(matchesAny(said, VOICE_STOP_LISTENING_WORDS), true, said);
   }
+});
+
+test('the default leave-voice phrases match how people actually say them', () => {
+  for (const said of ['max go to sleep', 'Max, go to sleep.', 'ok max leave the call',
+    'go to sleep max']) {
+    assert.equal(matchesAny(said, VOICE_LEAVE_WORDS), true, said);
+  }
+  // "go to sleep" is a leave phrase now, not a stop-listening one.
+  assert.equal(matchesAny('max go to sleep', VOICE_STOP_LISTENING_WORDS), false);
 });
 
 test('the default stop phrases are already in canonical form', () => {
@@ -131,7 +139,7 @@ test('the default stop phrases are already in canonical form', () => {
   // longer fatal — but a default that isn't already canonical is a default
   // that doesn't read the way it will be stored and shown back on the
   // dashboard. Keep them written the way they end up.
-  for (const w of [...VOICE_STOP_SPEAKING_WORDS, ...VOICE_STOP_LISTENING_WORDS]) {
+  for (const w of [...VOICE_STOP_SPEAKING_WORDS, ...VOICE_STOP_LISTENING_WORDS, ...VOICE_LEAVE_WORDS]) {
     assert.equal(normalizePhrase(w), w, `not in canonical form: ${w}`);
   }
 });
@@ -140,24 +148,31 @@ test('the default stop phrases are already in canonical form', () => {
 // (see handleUtterance's `engaged` check) — a bare "stop listening" said
 // mid-conversation should not need the wake word repeated back at it.
 test('the name-free fallback phrases match without the bot\'s name', () => {
-  for (const said of ['stop listening', 'go to sleep', "we're done", 'that is all']) {
+  for (const said of ['stop listening', "we're done", 'that is all']) {
     assert.equal(matchesAny(said, ENGAGED_STOP_LISTENING_WORDS), true, said);
   }
   for (const said of ['stop talking', 'shut up', 'quiet down']) {
     assert.equal(matchesAny(said, ENGAGED_STOP_SPEAKING_WORDS), true, said);
   }
-});
-
-test('every stop phrase is multi-word, since matching is substring-based', () => {
-  // A bare "stop" would fire inside "stopping", "nonstop", "stop by later".
-  for (const w of [...VOICE_STOP_SPEAKING_WORDS, ...VOICE_STOP_LISTENING_WORDS]) {
-    assert.ok(w.includes(' '), `single-word stop phrase is too greedy: ${w}`);
+  for (const said of ['go to sleep', 'leave the call', 'drop from voice']) {
+    assert.equal(matchesAny(said, ENGAGED_LEAVE_WORDS), true, said);
   }
 });
 
-test('the two stop lists are disjoint, so an utterance means one thing', () => {
-  for (const w of VOICE_STOP_SPEAKING_WORDS) {
-    assert.equal(VOICE_STOP_LISTENING_WORDS.includes(w), false, w);
+test('every stop/leave phrase is multi-word, since matching is substring-based', () => {
+  // A bare "stop" would fire inside "stopping", "nonstop", "stop by later".
+  for (const w of [...VOICE_STOP_SPEAKING_WORDS, ...VOICE_STOP_LISTENING_WORDS, ...VOICE_LEAVE_WORDS]) {
+    assert.ok(w.includes(' '), `single-word phrase is too greedy: ${w}`);
+  }
+});
+
+test('the stop and leave lists are disjoint, so an utterance means one thing', () => {
+  const lists = { speaking: VOICE_STOP_SPEAKING_WORDS, listening: VOICE_STOP_LISTENING_WORDS, leave: VOICE_LEAVE_WORDS };
+  for (const [aName, a] of Object.entries(lists)) {
+    for (const [bName, b] of Object.entries(lists)) {
+      if (aName >= bName) continue;
+      for (const w of a) assert.equal(b.includes(w), false, `${w} is in both ${aName} and ${bName}`);
+    }
   }
 });
 

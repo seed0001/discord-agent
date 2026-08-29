@@ -89,7 +89,30 @@ export const CREDIT_RATES = [
     integrated: false,
     note: 'Priced and ready to meter. Not yet wired into the bot — see the roadmap.',
   },
+  {
+    id: 'music-clip',
+    provider: 'OpenRouter',
+    name: 'Music — short clip',
+    credits: 15,
+    unit: 'per clip',
+    integrated: true,
+    note: 'Lyria, ~30 seconds. Metered per generation, whether or not it is kept.',
+  },
+  {
+    id: 'music-song',
+    provider: 'OpenRouter',
+    name: 'Music — full song',
+    credits: 45,
+    unit: 'per song',
+    integrated: true,
+    note: 'Lyria, full structured track. Metered per generation, whether or not it is kept.',
+  },
 ];
+
+/** The billable kind for one generate_music call. */
+export function musicKind(length) {
+  return length === 'full' ? 'music-song' : 'music-clip';
+}
 
 const RATE_BY_ID = new Map(CREDIT_RATES.map((r) => [r.id, r]));
 

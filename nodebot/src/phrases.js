@@ -20,6 +20,7 @@ export const PHRASE_LIST_KEYS = new Set([
   'voice_cancel_words',
   'voice_stop_speaking_words',
   'voice_stop_listening_words',
+  'voice_leave_words',
 ]);
 
 /** Placeholder in bracket phrases that expands to the bot's name at runtime.

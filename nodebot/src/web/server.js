@@ -666,6 +666,9 @@ function buildRoutes(client) {
     ['POST', '/api/guilds/:guildId/voice/start', async ({ params }) => {
       const g = getGuild(client, params.guildId);
       db.setSetting(g.id, 'voice_enabled', true);
+      // Clear any "stay out" flag set by a leave_voice / "go to sleep" — the
+      // admin is explicitly turning voice back on.
+      db.setSetting(g.id, 'voice_sleep', false);
       const occupied = [...g.channels.cache.values()].filter(
         (c) => c.type === ChannelType.GuildVoice && c.members.some((m) => !m.user.bot),
       );
@@ -686,7 +689,9 @@ function buildRoutes(client) {
     ['POST', '/api/guilds/:guildId/voice/stop', async ({ params }) => {
       const g = getGuild(client, params.guildId);
       db.setSetting(g.id, 'voice_enabled', false);
-      voice.leaveRequestedGuild(g);
+      // Make it stick: without this the 30s rebalance sweep would rejoin the
+      // busiest occupied channel a moment later.
+      voice.sleepGuild(g);
       return { ok: true };
     }, { level: 'admin' }],
 

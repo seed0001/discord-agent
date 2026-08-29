@@ -107,9 +107,10 @@ test('matchesAny survives an empty or missing word list', () => {
   assert.equal(matchesAny('', ['hey max']), false);
 });
 
-test('all four voice lists are treated as phrase lists', () => {
+test('every voice phrase list is treated as a phrase list', () => {
   assert.deepEqual([...PHRASE_LIST_KEYS].sort(), [
     'voice_cancel_words',
+    'voice_leave_words',
     'voice_stop_listening_words',
     'voice_stop_speaking_words',
     'voice_wake_words',

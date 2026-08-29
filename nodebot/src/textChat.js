@@ -12,6 +12,7 @@ import * as agentTools from './agentTools.js';
 import * as calendar from './calendar.js';
 import * as mediaTools from './mediaTools.js';
 import * as musicTools from './musicTools.js';
+import * as voiceTools from './voiceTools.js';
 import * as channelBrains from './channelBrains.js';
 import * as documents from './documents.js';
 import * as github from './github.js';
@@ -111,6 +112,9 @@ function toolHandler(client, message, owner) {
     // Open to everyone: calendar.execute re-checks the owner-only bits
     // (pinging others/@everyone, another channel, editing someone else's).
     if (calendar.isCalendarTool(name)) return calendar.execute(message, name, args, owner);
+    // Open to everyone: pulling the bot in/out of voice is low-stakes and the
+    // point is that it shouldn't need an admin.
+    if (voiceTools.isVoiceTool(name)) return voiceTools.execute(client, message, name, args);
     if (owner && name in agentTools.TOOLS) return agentTools.execute(client, message, name, args);
     // Not gated on owner: a guild can open generation up to everyone, and
     // mediaTools.execute re-checks that itself rather than trusting us.
@@ -220,6 +224,7 @@ export async function handleMessage(client, message) {
     ...TOOL_SCHEMAS, ...KB_TOOL_SCHEMAS, memory.RECALL_TOOL_SCHEMA,
     ...github.GITHUB_TOOL_SCHEMAS, ...REPO_TOOL_SCHEMAS,
     ...calendar.CALENDAR_TOOL_SCHEMAS,
+    ...(voiceTools.enabled() ? voiceTools.TOOL_SCHEMAS : []),
   ];
   // Media schemas hang off canGenerate, not owner — generation can be opened
   // to a whole guild, so the two permissions stack independently.

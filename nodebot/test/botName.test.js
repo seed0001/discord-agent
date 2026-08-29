@@ -72,11 +72,13 @@ test('wake and stop phrases follow the bot name', withDb(() => {
   assert.deepEqual(voicePhrases(client, '1', 'voice_wake_words'), ['hey amy', 'amy are you there']);
   assert.ok(voicePhrases(client, '1', 'voice_stop_speaking_words').includes('amy stop speaking'));
   assert.ok(voicePhrases(client, '1', 'voice_stop_listening_words').includes('amy stop listening'));
+  assert.ok(voicePhrases(client, '1', 'voice_leave_words').includes('amy go to sleep'));
 }));
 
 test('no derived phrase still says max after a rename', withDb(() => {
   const client = clientNamed('Amy');
-  for (const key of ['voice_wake_words', 'voice_stop_speaking_words', 'voice_stop_listening_words']) {
+  for (const key of ['voice_wake_words', 'voice_stop_speaking_words',
+    'voice_stop_listening_words', 'voice_leave_words']) {
     for (const phrase of voicePhrases(client, '1', key)) {
       assert.ok(!phrase.includes('max'), `${key} still contains "max": ${phrase}`);
     }

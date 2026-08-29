@@ -952,6 +952,24 @@ async function renderSettings() {
               minutes; the hourly cap is the safety net. Opening either to
               <strong>everyone</strong> hands the whole server a button that spends real money.</span>
           </div>
+
+          <div class="section-title">Music</div>
+          <div class="card">
+            <label class="field"><span class="lbl">Roles that can make music</span>
+              <select id="s-music_roles" multiple size="5">${allRoles.map((r) =>
+                `<option value="${r.id}" ${(settings.music_roles || []).map(String).includes(r.id) ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select>
+              <span class="muted">Generate tracks with Lyria and keep a personal 10-song library.</span></label>
+            <label class="field"><span class="lbl">Roles that can also curate the server library</span>
+              <select id="s-music_curator_roles" multiple size="5">${allRoles.map((r) =>
+                `<option value="${r.id}" ${(settings.music_curator_roles || []).map(String).includes(r.id) ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select>
+              <span class="muted">Everything above, plus adding and removing songs in the one shared
+                server library (30 songs).</span></label>
+            <span class="muted">Server admins and the server owner always have both. Leave both
+              lists empty and music stays admin-only — the safe default, since every generation
+              spends real credits whether or not the track is kept. ${esc(botLabel(settings))} can
+              also grant a role from chat ("let the DJ role make music"), and members turn their
+              own library sharing on or off by asking.</span>
+          </div>
         </section>
 
         <section class="settings-panel ${activeTab === "voice-detect" ? "active" : ""}" data-panel="voice-detect">
@@ -1020,11 +1038,16 @@ async function renderSettings() {
                 placeholder="[{ai} stop speaking] [{ai} be quiet]"></label>
             <label class="field"><span class="lbl">Stop listening (end the conversation)</span>
               <input id="s-voice_stop_listening_words" value="${esc(brackets(settings.voice_stop_listening_words))}"
-                placeholder="[{ai} stop listening] [{ai} go to sleep]"></label>
+                placeholder="[{ai} stop listening] [{ai} we are done]"></label>
+            <label class="field"><span class="lbl">Leave voice (disconnect and stay out)</span>
+              <input id="s-voice_leave_words" value="${esc(brackets(settings.voice_leave_words))}"
+                placeholder="[{ai} go to sleep] [{ai} leave the call]"></label>
             <span class="muted">Put each phrase in its own [brackets]. Use <code>{ai}</code> as a
               placeholder for the bot's name so wake words follow renames.
               Say a wake word to pull the bot into the conversation; a cancel word right
-              after calls it off before he answers.</span>
+              after calls it off before he answers. <strong>Leave voice</strong> is stronger than
+              stop&nbsp;listening — the bot disconnects and won't auto-rejoin until someone asks it
+              back ("join us in voice") or you hit start above.</span>
           </div>
         </section>
 
@@ -1165,6 +1188,8 @@ async function renderSettings() {
       media_image_model: $("#s-media_image_model").value.trim(),
       media_vision_model: $("#s-media_vision_model").value.trim(),
       media_video_hourly_cap: parseInt($("#s-media_video_hourly_cap").value, 10) || 0,
+      music_roles: [...$("#s-music_roles").selectedOptions].map((o) => o.value),
+      music_curator_roles: [...$("#s-music_curator_roles").selectedOptions].map((o) => o.value),
       pressure_enabled: $("#s-pressure_enabled").checked,
       deesc_enabled: $("#s-deesc_enabled").checked,
       deesc_harsh_language: $("#s-deesc_harsh_language").checked,
@@ -1178,6 +1203,7 @@ async function renderSettings() {
       voice_cancel_words: $("#s-voice_cancel_words").value,
       voice_stop_speaking_words: $("#s-voice_stop_speaking_words").value,
       voice_stop_listening_words: $("#s-voice_stop_listening_words").value,
+      voice_leave_words: $("#s-voice_leave_words").value,
       // Blank is meaningful: the server turns it back into null, i.e.
       // "follow the Discord application name".
       bot_name: $("#s-bot_name").value.trim(),

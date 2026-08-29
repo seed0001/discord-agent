@@ -152,8 +152,7 @@ function withDb(fn) {
   return async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'nodebot-music-test-'));
     db.initDb(path.join(dir, 'test.db'));
-    // The "song I just made" cache is module-level, keyed by guild id, and
-    // every fakeMessage below shares guild id '1' — without this reset a
+    // The "song I just made" cache is module-level — without this reset a
     // generate_music left pending by an earlier test leaks into the next.
     musicTools._resetForTests();
     try {
@@ -165,30 +164,35 @@ function withDb(fn) {
   };
 }
 
-/** A GuildMember with the given Discord permission flags — same shape
- * web.test.js's fakeMember uses for the same underlying roles.js check. */
-function fakeMember(id, flags = []) {
+/** A GuildMember with the given Discord permission flags and role ids. */
+function fakeMember(id, { flags = [], roleIds = [] } = {}) {
   return {
     id,
-    user: { id, username: `user-${id}` },
-    roles: { cache: new Map() },
+    user: { id, username: `user-${id}`, bot: false },
+    roles: { cache: new Map(roleIds.map((r) => [r, { id: r, name: `role-${r}` }])) },
     permissions: { has: (flag) => flags.includes(flag) },
   };
 }
 
-/** Only the bits the handlers touch: .guild/.channel/.author/.member, same
- * relaxed message contract mediaTools' own tests use. */
-function fakeMessage(authorId, { flags = [], inGuild = true } = {}) {
+/** Only the bits the handlers touch. `voiceMembers`, when given, stands in for
+ * the bot's current voice channel — an array of {id, bot?, shareable?} — so
+ * the DJ-scope path can be exercised without a real @discordjs/voice
+ * connection. */
+function fakeMessage(authorId, {
+  flags = [], roleIds = [], inGuild = true,
+} = {}) {
   const sent = [];
   const deleted = [];
-  const member = inGuild ? fakeMember(authorId, flags) : null;
+  const member = inGuild ? fakeMember(authorId, { flags, roleIds }) : null;
+  const membersCache = new Map(member ? [[authorId, member]] : []);
   return {
     guild: {
       id: '1',
+      roles: { cache: new Map() },
       members: {
-        cache: new Map(member ? [[authorId, member]] : []),
+        cache: membersCache,
         fetch: async (id) => {
-          const m = new Map(member ? [[authorId, member]] : []).get(id);
+          const m = membersCache.get(id);
           if (!m) throw new Error('Unknown Member');
           return m;
         },
@@ -208,39 +212,95 @@ function fakeMessage(authorId, { flags = [], inGuild = true } = {}) {
   };
 }
 
-// -- allowed ------------------------------------------------------------------
-
-test('the bot owner may always generate music, even with no special roles', withDb(async () => {
-  assert.equal(await musicTools.allowed(fakeMessage(OWNER, { flags: [] }), OWNER), true);
-}));
-
-test('Discord Administrator (which the server owner always has) is enough', withDb(async () => {
-  const message = fakeMessage('someone-else', { flags: [PermissionsBitField.Flags.Administrator] });
-  assert.equal(await musicTools.allowed(message, OWNER), true);
-}));
-
-test('a role mapped to dashboard_admin_roles is enough', withDb(async () => {
-  db.setSetting('1', 'dashboard_admin_roles', ['admin-role']);
-  const message = fakeMessage('someone-else');
-  message.member.roles.cache = new Map([['admin-role', { id: 'admin-role' }]]);
-  assert.equal(await musicTools.allowed(message, OWNER), true);
-}));
-
-test('a plain member is refused, even one with moderator permissions', withDb(async () => {
-  const message = fakeMessage('someone-else', { flags: [PermissionsBitField.Flags.KickMembers] });
-  assert.equal(await musicTools.allowed(message, OWNER), false);
-}));
-
-test('someone who is not a member of this guild at all is refused', withDb(async () => {
-  const message = fakeMessage('someone-else', { inGuild: false });
-  assert.equal(await musicTools.allowed(message, OWNER), false);
-}));
-
-// -- execute --------------------------------------------------------------------
+/** A stand-in for voice.js: playback + which channel the bot is "in". Pass
+ * `members` as [{id, shareable}] to populate the current voice channel; each
+ * shareable member also gets their music_prefs row set. */
+function fakeVoice({ connected = true, busy = false, guildId = '1', members = null } = {}) {
+  const played = [];
+  let playing = false;
+  if (members) {
+    for (const m of members) {
+      if (m.shareable) db.setMusicShareable(guildId, m.id, true);
+    }
+  }
+  return {
+    played,
+    currentVoiceChannel() {
+      if (!members) return null;
+      return {
+        members: new Map(members.map((m) => [m.id, { id: m.id, user: { id: m.id, bot: Boolean(m.bot) } }])),
+      };
+    },
+    async playInVoice(guild, songs) {
+      if (!connected || busy) return false;
+      played.push(songs);
+      playing = true;
+      return true;
+    },
+    stopMusic() {
+      const wasPlaying = playing;
+      playing = false;
+      return wasPlaying;
+    },
+  };
+}
 
 const musicChunk = (bytes = 'SONGBYTES') => [audioChunk(Buffer.from(bytes).toString('base64'))];
 
-test('execute re-checks access and refuses a non-admin without calling the API', withDb(async () => {
+async function generate(message, bytes = 'CLIPBYTES') {
+  return withFetch(
+    async () => sseResponse(musicChunk(bytes)),
+    () => musicTools.execute(null, message, 'generate_music', { prompt: 'a jingle' }, OWNER),
+  );
+}
+
+function seedSong(guildId, title, { ownerId, createdBy = ownerId, bytes = 'AUDIO', length = 'short' } = {}) {
+  return db.addSong(guildId, {
+    title, prompt: `a song called ${title}`, data: Buffer.from(bytes),
+    mediaType: 'audio/mpeg', length, costUsd: 0.04, ownerId, createdBy,
+  });
+}
+
+// -- access ------------------------------------------------------------------
+
+test('the bot owner may always generate music, with no special roles', withDb(async () => {
+  assert.equal(await musicTools.allowed(fakeMessage(OWNER), OWNER), true);
+  assert.equal(await musicTools.accessFor(fakeMessage(OWNER), OWNER), 'curate');
+}));
+
+test('Discord Administrator (which the server owner always has) is enough, at the curator tier', withDb(async () => {
+  const message = fakeMessage('someone-else', { flags: [PermissionsBitField.Flags.Administrator] });
+  assert.equal(await musicTools.accessFor(message, OWNER), 'curate');
+}));
+
+test('with no music roles mapped, a plain member gets nothing', withDb(async () => {
+  const message = fakeMessage('someone-else', { flags: [PermissionsBitField.Flags.KickMembers] });
+  assert.equal(await musicTools.accessFor(message, OWNER), 'none');
+  assert.equal(await musicTools.allowed(message, OWNER), false);
+}));
+
+test('a role in music_roles grants generate; a role in music_curator_roles grants curate', withDb(async () => {
+  db.setSetting('1', 'music_roles', ['dj']);
+  db.setSetting('1', 'music_curator_roles', ['resident']);
+
+  const dj = fakeMessage('m1', { roleIds: ['dj'] });
+  assert.equal(await musicTools.accessFor(dj, OWNER), 'generate');
+
+  const resident = fakeMessage('m2', { roleIds: ['resident'] });
+  assert.equal(await musicTools.accessFor(resident, OWNER), 'curate');
+
+  const nobody = fakeMessage('m3', { roleIds: ['random'] });
+  assert.equal(await musicTools.accessFor(nobody, OWNER), 'none');
+}));
+
+test('someone who is not a member of this guild at all gets nothing', withDb(async () => {
+  const message = fakeMessage('someone-else', { inGuild: false });
+  assert.equal(await musicTools.accessFor(message, OWNER), 'none');
+}));
+
+// -- execute gating --------------------------------------------------------
+
+test('execute re-checks access and refuses a non-member without calling the API', withDb(async () => {
   let calls = 0;
   await withFetch(
     async () => { calls += 1; return sseResponse(musicChunk()); },
@@ -248,28 +308,32 @@ test('execute re-checks access and refuses a non-admin without calling the API',
       const message = fakeMessage('someone-else');
       const result = await musicTools.execute(null, message, 'generate_music', { prompt: 'a jingle' }, OWNER);
       assert.match(result, /^Error:/);
-      assert.match(result, /limited to server admins, the server owner, or the bot owner/);
+      assert.match(result, /limited to roles the server has granted/);
       assert.equal(calls, 0, 'a refused call must not reach the API');
       assert.equal(message._sent.length, 0);
     },
   );
 }));
 
+test('a member with a music role can generate', withDb(async () => {
+  db.setSetting('1', 'music_roles', ['dj']);
+  const message = fakeMessage('m1', { roleIds: ['dj'] });
+  const result = await generate(message);
+  assert.doesNotMatch(result, /^Error:/);
+  assert.equal(message._sent.length, 2, 'the working notice, then the file');
+}));
+
+// -- generate_music --------------------------------------------------------
+
 test('generate_music posts the file and reports it as already posted', withDb(async () => {
-  await withFetch(
-    async () => sseResponse(musicChunk()),
-    async () => {
-      const message = fakeMessage(OWNER);
-      const result = await musicTools.execute(null, message, 'generate_music', { prompt: 'a cheerful jingle' }, OWNER);
-      assert.equal(message._sent.length, 2, 'the working notice, then the file');
-      const [file] = message._sent[1].files;
-      assert.equal(file.attachment.toString(), 'SONGBYTES');
-      assert.equal(file.name, 'generated_song.mp3');
-      assert.match(result, /ALREADY POSTED/);
-      assert.doesNotMatch(result, /^Error:/);
-      assert.equal(message._deleted.length, 1, 'the working notice is cleaned up');
-    },
-  );
+  const message = fakeMessage(OWNER);
+  const result = await generate(message, 'SONGBYTES');
+  assert.equal(message._sent.length, 2);
+  const [file] = message._sent[1].files;
+  assert.equal(file.attachment.toString(), 'SONGBYTES');
+  assert.equal(file.name, 'generated_song.mp3');
+  assert.match(result, /ALREADY POSTED/);
+  assert.equal(message._deleted.length, 1, 'the working notice is cleaned up');
 }));
 
 test('an oversized track is not posted, and the result says so', withDb(async () => {
@@ -303,39 +367,7 @@ test('a blank prompt is a ToolError, surfaced as an Error string', withDb(async 
   assert.match(result, /needs a prompt/);
 }));
 
-// ===========================================================================
-// song library + voice playback
-// ===========================================================================
-
-/** A fake stand-in for voice.js's playback API, so these tests exercise
- * musicTools' own logic (what gets saved/found/queued) without driving a
- * real @discordjs/voice connection — the same reason voice.test.js itself
- * doesn't touch the AudioPlayer machinery directly. */
-function fakeVoice({ connected = true, busy = false } = {}) {
-  const played = [];
-  let playing = false;
-  return {
-    played, // array of arrays of {title, data, mediaType} passed to playInVoice
-    async playInVoice(guild, songs) {
-      if (!connected || busy) return false;
-      played.push(songs);
-      playing = true;
-      return true;
-    },
-    stopMusic() {
-      const wasPlaying = playing;
-      playing = false;
-      return wasPlaying;
-    },
-  };
-}
-
-async function generateAndDiscard(message) {
-  return withFetch(
-    async () => sseResponse(musicChunk('CLIPBYTES')),
-    () => musicTools.execute(null, message, 'generate_music', { prompt: 'a jingle' }, OWNER),
-  );
-}
+// -- save_song: personal vs server library --------------------------------
 
 test('save_song refuses when nothing was generated recently', withDb(async () => {
   const result = await musicTools.execute(null, fakeMessage(OWNER), 'save_song', { title: 'X' }, OWNER);
@@ -345,82 +377,146 @@ test('save_song refuses when nothing was generated recently', withDb(async () =>
 
 test('save_song needs a title', withDb(async () => {
   const message = fakeMessage(OWNER);
-  await generateAndDiscard(message);
+  await generate(message);
   const result = await musicTools.execute(null, message, 'save_song', {}, OWNER);
   assert.match(result, /^Error:/);
   assert.match(result, /needs a title/);
 }));
 
-test('generate_music then save_song persists it, and list_songs shows it', withDb(async () => {
-  const message = fakeMessage(OWNER);
-  await generateAndDiscard(message);
+test('save_song puts a track in the asker\'s own library by default', withDb(async () => {
+  db.setSetting('1', 'music_roles', ['dj']);
+  const message = fakeMessage('m1', { roleIds: ['dj'] });
+  await generate(message);
   const saved = await musicTools.execute(null, message, 'save_song', { title: 'Chill Vibes' }, OWNER);
-  assert.match(saved, /Saved "Chill Vibes"/);
-  assert.equal(db.countSongs('1'), 1);
+  assert.match(saved, /Saved "Chill Vibes" to their library \(1\/10\)/);
+  assert.equal(db.countSongs('1', 'm1'), 1);
+  assert.equal(db.countSongs('1', null), 0, 'nothing lands in the server library');
+}));
 
-  const listed = await musicTools.execute(null, message, 'list_songs', {}, OWNER);
-  assert.match(listed, /Chill Vibes/);
+test("save_song scope:'server' is refused for a generate-tier member, allowed for a curator", withDb(async () => {
+  db.setSetting('1', 'music_roles', ['dj']);
+  db.setSetting('1', 'music_curator_roles', ['resident']);
+
+  const dj = fakeMessage('m1', { roleIds: ['dj'] });
+  await generate(dj);
+  const refused = await musicTools.execute(null, dj, 'save_song', { title: 'Nope', scope: 'server' }, OWNER);
+  assert.match(refused, /^Error:/);
+  assert.match(refused, /only music curators/);
+  assert.equal(db.countSongs('1', null), 0);
+
+  const resident = fakeMessage('m2', { roleIds: ['resident'] });
+  await generate(resident);
+  const ok = await musicTools.execute(null, resident, 'save_song', { title: 'House Anthem', scope: 'server' }, OWNER);
+  assert.match(ok, /Saved "House Anthem" to the server library \(1\/30\)/);
+  assert.equal(db.countSongs('1', null), 1);
 }));
 
 test('save_song a second time without a fresh generation fails — no silent duplicate', withDb(async () => {
   const message = fakeMessage(OWNER);
-  await generateAndDiscard(message);
-  await musicTools.execute(null, message, 'save_song', { title: 'First Save' }, OWNER);
-  const result = await musicTools.execute(null, message, 'save_song', { title: 'Second Save' }, OWNER);
+  await generate(message);
+  await musicTools.execute(null, message, 'save_song', { title: 'First' }, OWNER);
+  const result = await musicTools.execute(null, message, 'save_song', { title: 'Second' }, OWNER);
   assert.match(result, /^Error:/);
-  assert.equal(db.countSongs('1'), 1);
+  assert.equal(db.countSongs('1', OWNER), 1);
 }));
 
-test('save_song refuses once the library is full and names the current titles', withDb(async () => {
+test('save_song refuses once the personal library is full and names the titles', withDb(async () => {
   const message = fakeMessage(OWNER);
   for (let i = 0; i < db.SONG_LIBRARY_CAP; i += 1) {
-    db.addSong('1', {
-      title: `Song ${i}`, prompt: 'p', data: Buffer.from('x'), mediaType: 'audio/mpeg',
-      length: 'short', costUsd: 0, createdBy: OWNER,
-    });
+    seedSong('1', `Song ${i}`, { ownerId: OWNER });
   }
-  await generateAndDiscard(message);
+  await generate(message);
   const result = await musicTools.execute(null, message, 'save_song', { title: 'One Too Many' }, OWNER);
   assert.match(result, /^Error:/);
   assert.match(result, /full \(10\/10\)/);
   assert.match(result, /Song 0/);
-  assert.equal(db.countSongs('1'), db.SONG_LIBRARY_CAP);
+  assert.equal(db.countSongs('1', OWNER), db.SONG_LIBRARY_CAP);
 }));
 
-test('list_songs reports an empty library plainly', withDb(async () => {
+// -- list_songs -----------------------------------------------------------
+
+test('list_songs reports an empty state plainly', withDb(async () => {
   const result = await musicTools.execute(null, fakeMessage(OWNER), 'list_songs', {}, OWNER);
-  assert.match(result, /empty/);
+  assert.match(result, /Nothing is saved yet/);
 }));
 
-test('delete_song removes a saved song by title', withDb(async () => {
-  db.addSong('1', {
-    title: 'Chill Vibes', prompt: 'p', data: Buffer.from('x'), mediaType: 'audio/mpeg',
-    length: 'short', costUsd: 0, createdBy: OWNER,
-  });
+test('list_songs shows the asker\'s own library and the server library, labelled', withDb(async () => {
+  seedSong('1', 'My Track', { ownerId: OWNER });
+  seedSong('1', 'House Track', { ownerId: null, createdBy: OWNER });
+  const result = await musicTools.execute(null, fakeMessage(OWNER), 'list_songs', {}, OWNER);
+  assert.match(result, /My Track \(clip, your library\)/);
+  assert.match(result, /House Track \(clip, server library\)/);
+}));
+
+test('list_songs in voice also shows a present member\'s shared library', withDb(async () => {
+  seedSong('1', 'Mine', { ownerId: OWNER });
+  seedSong('1', 'Friends Track', { ownerId: 'friend' });
+  musicTools._setVoiceModuleForTests(fakeVoice({ members: [{ id: OWNER }, { id: 'friend', shareable: true }] }));
+  try {
+    const result = await musicTools.execute(null, fakeMessage(OWNER), 'list_songs', {}, OWNER);
+    assert.match(result, /Friends Track/);
+    assert.match(result, /shared libraries of people here/);
+  } finally {
+    musicTools._setVoiceModuleForTests(null);
+  }
+}));
+
+test('list_songs does NOT show a present member who has not opted into sharing', withDb(async () => {
+  seedSong('1', 'Mine', { ownerId: OWNER });
+  seedSong('1', 'Private Track', { ownerId: 'friend' });
+  musicTools._setVoiceModuleForTests(fakeVoice({ members: [{ id: OWNER }, { id: 'friend', shareable: false }] }));
+  try {
+    const result = await musicTools.execute(null, fakeMessage(OWNER), 'list_songs', {}, OWNER);
+    assert.doesNotMatch(result, /Private Track/);
+  } finally {
+    musicTools._setVoiceModuleForTests(null);
+  }
+}));
+
+// -- delete_song --------------------------------------------------------------
+
+test('delete_song removes a song from the asker\'s own library', withDb(async () => {
+  seedSong('1', 'Chill Vibes', { ownerId: OWNER });
   const result = await musicTools.execute(null, fakeMessage(OWNER), 'delete_song', { song: 'chill vibes' }, OWNER);
-  assert.match(result, /Deleted "Chill Vibes"/);
-  assert.equal(db.countSongs('1'), 0);
+  assert.match(result, /Deleted "Chill Vibes" from their library/);
+  assert.equal(db.countSongs('1', OWNER), 0);
+}));
+
+test('a generate-tier member cannot delete from the server library', withDb(async () => {
+  db.setSetting('1', 'music_roles', ['dj']);
+  seedSong('1', 'House Anthem', { ownerId: null, createdBy: 'someone' });
+  const message = fakeMessage('m1', { roleIds: ['dj'] });
+  const result = await musicTools.execute(null, message, 'delete_song', { song: 'House Anthem' }, OWNER);
+  assert.match(result, /^Error:/);
+  assert.equal(db.countSongs('1', null), 1);
+}));
+
+test('a curator can delete from the server library', withDb(async () => {
+  db.setSetting('1', 'music_curator_roles', ['resident']);
+  seedSong('1', 'House Anthem', { ownerId: null, createdBy: 'someone' });
+  const message = fakeMessage('m2', { roleIds: ['resident'] });
+  const result = await musicTools.execute(null, message, 'delete_song', { song: 'House Anthem' }, OWNER);
+  assert.match(result, /Deleted "House Anthem" from the server library/);
+  assert.equal(db.countSongs('1', null), 0);
 }));
 
 test('delete_song reports an unmatched title without deleting anything', withDb(async () => {
-  db.addSong('1', {
-    title: 'Chill Vibes', prompt: 'p', data: Buffer.from('x'), mediaType: 'audio/mpeg',
-    length: 'short', costUsd: 0, createdBy: OWNER,
-  });
+  seedSong('1', 'Chill Vibes', { ownerId: OWNER });
   const result = await musicTools.execute(null, fakeMessage(OWNER), 'delete_song', { song: 'nope' }, OWNER);
   assert.match(result, /^Error:/);
-  assert.equal(db.countSongs('1'), 1);
+  assert.equal(db.countSongs('1', OWNER), 1);
 }));
+
+// -- playback ---------------------------------------------------------------
 
 test('play_song with no name plays the just-generated clip, not a saved one', withDb(async () => {
   const voice = fakeVoice();
   musicTools._setVoiceModuleForTests(voice);
   try {
     const message = fakeMessage(OWNER);
-    await generateAndDiscard(message);
+    await generate(message, 'CLIPBYTES');
     const result = await musicTools.execute(null, message, 'play_song', {}, OWNER);
     assert.match(result, /Now playing/);
-    assert.equal(voice.played.length, 1);
     assert.equal(voice.played[0][0].data.toString(), 'CLIPBYTES');
   } finally {
     musicTools._setVoiceModuleForTests(null);
@@ -438,27 +534,40 @@ test('play_song with no name and nothing generated is a clear error', withDb(asy
   }
 }));
 
-test('play_song by title plays the saved song', withDb(async () => {
-  db.addSong('1', {
-    title: 'Chill Vibes', prompt: 'p', data: Buffer.from('SAVEDBYTES'), mediaType: 'audio/mpeg',
-    length: 'short', costUsd: 0, createdBy: OWNER,
-  });
-  const voice = fakeVoice();
+test('play_song by title reaches the server library and a present shared library', withDb(async () => {
+  seedSong('1', 'House Anthem', { ownerId: null, createdBy: 'x', bytes: 'SERVERBYTES' });
+  seedSong('1', 'Friend Jam', { ownerId: 'friend', bytes: 'FRIENDBYTES' });
+  const voice = fakeVoice({ members: [{ id: OWNER }, { id: 'friend', shareable: true }] });
   musicTools._setVoiceModuleForTests(voice);
   try {
-    const result = await musicTools.execute(null, fakeMessage(OWNER), 'play_song', { song: 'Chill Vibes' }, OWNER);
-    assert.match(result, /Now playing "Chill Vibes"/);
-    assert.equal(voice.played[0][0].data.toString(), 'SAVEDBYTES');
+    let result = await musicTools.execute(null, fakeMessage(OWNER), 'play_song', { song: 'House Anthem' }, OWNER);
+    assert.match(result, /Now playing "House Anthem"/);
+    assert.equal(voice.played[0][0].data.toString(), 'SERVERBYTES');
+
+    result = await musicTools.execute(null, fakeMessage(OWNER), 'play_song', { song: 'Friend Jam' }, OWNER);
+    assert.match(result, /Now playing "Friend Jam"/);
+    assert.equal(voice.played[1][0].data.toString(), 'FRIENDBYTES');
+  } finally {
+    musicTools._setVoiceModuleForTests(null);
+  }
+}));
+
+test('play_song will not reach a non-present member\'s library', withDb(async () => {
+  seedSong('1', 'Stranger Song', { ownerId: 'stranger' });
+  db.setMusicShareable('1', 'stranger', true); // shareable, but not in the channel
+  const voice = fakeVoice({ members: [{ id: OWNER }] });
+  musicTools._setVoiceModuleForTests(voice);
+  try {
+    const result = await musicTools.execute(null, fakeMessage(OWNER), 'play_song', { song: 'Stranger Song' }, OWNER);
+    assert.match(result, /^Error:/);
+    assert.match(result, /no single song matches/);
   } finally {
     musicTools._setVoiceModuleForTests(null);
   }
 }));
 
 test('play_song reports plainly when the bot is not connected to voice', withDb(async () => {
-  db.addSong('1', {
-    title: 'Chill Vibes', prompt: 'p', data: Buffer.from('x'), mediaType: 'audio/mpeg',
-    length: 'short', costUsd: 0, createdBy: OWNER,
-  });
+  seedSong('1', 'Chill Vibes', { ownerId: OWNER });
   musicTools._setVoiceModuleForTests(fakeVoice({ connected: false }));
   try {
     const result = await musicTools.execute(null, fakeMessage(OWNER), 'play_song', { song: 'Chill Vibes' }, OWNER);
@@ -469,31 +578,40 @@ test('play_song reports plainly when the bot is not connected to voice', withDb(
   }
 }));
 
-test('play_playlist queues every saved song in order', withDb(async () => {
-  db.addSong('1', {
-    title: 'First', prompt: 'p', data: Buffer.from('a'), mediaType: 'audio/mpeg',
-    length: 'short', costUsd: 0, createdBy: OWNER,
-  });
-  db.addSong('1', {
-    title: 'Second', prompt: 'p', data: Buffer.from('b'), mediaType: 'audio/mpeg',
-    length: 'short', costUsd: 0, createdBy: OWNER,
-  });
+test("play_playlist scope:'mine' plays only the asker's library, in order", withDb(async () => {
+  seedSong('1', 'First', { ownerId: OWNER, bytes: 'a' });
+  seedSong('1', 'Second', { ownerId: OWNER, bytes: 'b' });
+  seedSong('1', 'ServerOne', { ownerId: null, createdBy: 'x', bytes: 'c' });
   const voice = fakeVoice();
   musicTools._setVoiceModuleForTests(voice);
   try {
-    const result = await musicTools.execute(null, fakeMessage(OWNER), 'play_playlist', {}, OWNER);
+    const result = await musicTools.execute(null, fakeMessage(OWNER), 'play_playlist', { scope: 'mine' }, OWNER);
     assert.match(result, /2 song\(s\), starting with "First"/);
-    assert.equal(voice.played[0].length, 2);
     assert.deepEqual(voice.played[0].map((s) => s.title), ['First', 'Second']);
   } finally {
     musicTools._setVoiceModuleForTests(null);
   }
 }));
 
-test('play_playlist refuses an empty library', withDb(async () => {
-  musicTools._setVoiceModuleForTests(fakeVoice());
+test("play_playlist scope:'all' includes the server library and present shared libraries", withDb(async () => {
+  seedSong('1', 'Mine', { ownerId: OWNER, bytes: 'a' });
+  seedSong('1', 'Server', { ownerId: null, createdBy: 'x', bytes: 'b' });
+  seedSong('1', 'FriendJam', { ownerId: 'friend', bytes: 'c' });
+  const voice = fakeVoice({ members: [{ id: OWNER }, { id: 'friend', shareable: true }] });
+  musicTools._setVoiceModuleForTests(voice);
   try {
     const result = await musicTools.execute(null, fakeMessage(OWNER), 'play_playlist', {}, OWNER);
+    assert.match(result, /3 song\(s\)/);
+    assert.deepEqual(voice.played[0].map((s) => s.title).sort(), ['FriendJam', 'Mine', 'Server']);
+  } finally {
+    musicTools._setVoiceModuleForTests(null);
+  }
+}));
+
+test('play_playlist refuses when there is nothing to play', withDb(async () => {
+  musicTools._setVoiceModuleForTests(fakeVoice());
+  try {
+    const result = await musicTools.execute(null, fakeMessage(OWNER), 'play_playlist', { scope: 'mine' }, OWNER);
     assert.match(result, /^Error:/);
     assert.match(result, /library is empty/);
   } finally {
@@ -508,10 +626,7 @@ test('stop_music reports whether anything was actually stopped', withDb(async ()
     const nothing = await musicTools.execute(null, fakeMessage(OWNER), 'stop_music', {}, OWNER);
     assert.equal(nothing, 'Nothing was playing.');
 
-    db.addSong('1', {
-      title: 'Chill Vibes', prompt: 'p', data: Buffer.from('x'), mediaType: 'audio/mpeg',
-      length: 'short', costUsd: 0, createdBy: OWNER,
-    });
+    seedSong('1', 'Chill Vibes', { ownerId: OWNER });
     await musicTools.execute(null, fakeMessage(OWNER), 'play_song', { song: 'Chill Vibes' }, OWNER);
     const stopped = await musicTools.execute(null, fakeMessage(OWNER), 'stop_music', {}, OWNER);
     assert.equal(stopped, 'Stopped the music.');
@@ -520,9 +635,43 @@ test('stop_music reports whether anything was actually stopped', withDb(async ()
   }
 }));
 
-test('song library tools are refused for a non-admin, same gate as generate_music', withDb(async () => {
+// -- sharing + access tools -----------------------------------------------
+
+test('set_music_shareable toggles the asker\'s own music_prefs row', withDb(async () => {
+  db.setSetting('1', 'music_roles', ['dj']);
+  const message = fakeMessage('m1', { roleIds: ['dj'] });
+  let result = await musicTools.execute(null, message, 'set_music_shareable', { shareable: true }, OWNER);
+  assert.match(result, /shareable now/);
+  assert.equal(db.isMusicShareable('1', 'm1'), true);
+
+  result = await musicTools.execute(null, message, 'set_music_shareable', { shareable: false }, OWNER);
+  assert.match(result, /private again/);
+  assert.equal(db.isMusicShareable('1', 'm1'), false);
+}));
+
+test('set_music_access adds and removes a role from a tier — admins only', withDb(async () => {
+  const admin = fakeMessage('a1', { flags: [PermissionsBitField.Flags.Administrator] });
+  let result = await musicTools.execute(null, admin, 'set_music_access', { tier: 'generate', role_id: 'dj' }, OWNER);
+  assert.match(result, /Granted music access/);
+  assert.deepEqual(db.getSetting('1', 'music_roles'), ['dj']);
+
+  result = await musicTools.execute(null, admin, 'set_music_access', { tier: 'generate', role_id: 'dj', revoke: true }, OWNER);
+  assert.match(result, /Revoked music access/);
+  assert.deepEqual(db.getSetting('1', 'music_roles'), []);
+}));
+
+test('set_music_access is refused for a music-curator role that is not a real admin', withDb(async () => {
+  db.setSetting('1', 'music_curator_roles', ['resident']);
+  const resident = fakeMessage('m2', { roleIds: ['resident'] });
+  const result = await musicTools.execute(null, resident, 'set_music_access', { tier: 'generate', role_id: 'dj' }, OWNER);
+  assert.match(result, /^Error:/);
+  assert.match(result, /limited to server admins/);
+  assert.deepEqual(db.getSetting('1', 'music_roles'), []);
+}));
+
+test('library tools are refused for someone with no music access', withDb(async () => {
   const message = fakeMessage('someone-else');
   const result = await musicTools.execute(null, message, 'list_songs', {}, OWNER);
   assert.match(result, /^Error:/);
-  assert.match(result, /limited to server admins/);
+  assert.match(result, /limited to roles the server has granted/);
 }));

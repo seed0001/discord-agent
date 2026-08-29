@@ -22,7 +22,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import {
   VOICE_WAKE_WORDS, VOICE_CANCEL_WORDS, VOICE_STOP_SPEAKING_WORDS,
-  VOICE_STOP_LISTENING_WORDS, VOICE_FOLLOWUP_WINDOW_SEC, OPENROUTER_MODEL,
+  VOICE_STOP_LISTENING_WORDS, VOICE_LEAVE_WORDS, VOICE_FOLLOWUP_WINDOW_SEC,
+  OPENROUTER_MODEL,
 } from './config.js';
 import { SYSTEM_PROMPT, CAPABILITY_PROMPT } from './persona.js';
 // Platform tables (accounts, servers, orders, the credit ledger) live in the
@@ -121,8 +122,21 @@ CREATE TABLE IF NOT EXISTS songs (
     media_type TEXT NOT NULL,
     length     TEXT NOT NULL,
     cost_usd   REAL,
+    -- owner_id: whose library this song sits in. A user id is that member's
+    -- personal library; NULL is the shared server library. created_by is who
+    -- generated it, which differs from owner_id for a server-library
+    -- contribution.
+    owner_id   TEXT,
     created_by TEXT,
     created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS music_prefs (
+    guild_id  TEXT NOT NULL,
+    user_id   TEXT NOT NULL,
+    -- 1 means "while I'm in the voice channel, the bot may play my saved
+    -- songs for other people in it". Off by default — opt in.
+    shareable INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS calendar_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,6 +199,16 @@ export const DEFAULTS = {
   voice_followup_window_sec: VOICE_FOLLOWUP_WINDOW_SEC,
   voice_stop_speaking_words: VOICE_STOP_SPEAKING_WORDS,
   voice_stop_listening_words: VOICE_STOP_LISTENING_WORDS,
+  // "Joker, go to sleep" — leave the voice channel and stay out. Distinct
+  // from stop-listening (which only ends the follow-up window): this sets
+  // voice_sleep below so the rebalance sweep won't rejoin.
+  voice_leave_words: VOICE_LEAVE_WORDS,
+  // Set true when the bot has been told to leave voice (by phrase, by a
+  // join/leave tool, or by the dashboard's stop button). While true the
+  // rebalance sweep leaves voice alone — no auto-join — until something
+  // clears it ("join us in voice", or the dashboard). Not a dashboard-first
+  // control; the point is to steer voice presence by talking to the bot.
+  voice_sleep: false,
   // How the bot decides it is being spoken to.
   //   'smart'      — a cheap classifier asks whether the bot's name came up
   //                  (tolerating mishearings), then the conversational model
@@ -288,6 +312,14 @@ export const DEFAULTS = {
   // OWNER_ID is always creator regardless, and cannot be locked out.
   dashboard_admin_roles: [],
   dashboard_mod_roles: [],
+  // Who may use music generation and the song library, mapped to this
+  // server's Discord roles. music_roles: generate tracks and keep a personal
+  // 10-song library. music_curator_roles: all of that, plus adding songs to
+  // the shared server library. Admins and the server owner always have both.
+  // Both empty => music stays admin/owner-only, which is the historical
+  // behaviour and a safe default given each generation spends real money.
+  music_roles: [],
+  music_curator_roles: [],
   // bot-wide presence, stored under guild id 0 by the dashboard
   presence_status: 'online',
   presence_activity_type: 'playing',
@@ -336,7 +368,35 @@ export function initDb(path = 'nodebot.db') {
   db.exec(SCHEMA);
   db.exec(PLATFORM_SCHEMA);
   refreshModelCatalogShape();
+  migrateSongsShape();
   return db;
+}
+
+/**
+ * Add songs.owner_id to a database created before per-user libraries existed.
+ *
+ * Unlike the model catalog, songs can't just be dropped and rebuilt — the
+ * audio is the only copy. A plain ALTER ADD COLUMN is safe here (SQLite
+ * backfills NULL, and NULL already means "server library" in the new model),
+ * followed by a one-time backfill: every existing saved song was generated
+ * under the old admin-only rule, so created_by is a real member and the
+ * least surprising home for it is that member's personal library.
+ */
+function migrateSongsShape() {
+  let columns;
+  try {
+    columns = db.prepare("SELECT name FROM pragma_table_info('songs')").all();
+  } catch {
+    return; // no songs table yet — the schema above just made it, with owner_id
+  }
+  if (!columns.some((c) => c.name === 'owner_id')) {
+    console.log('[db] adding songs.owner_id for per-user libraries');
+    db.exec('ALTER TABLE songs ADD COLUMN owner_id TEXT');
+    db.exec('UPDATE songs SET owner_id = created_by WHERE owner_id IS NULL AND created_by IS NOT NULL');
+  }
+  // Built here rather than in SCHEMA: on a pre-migration database the column
+  // doesn't exist yet when SCHEMA runs, so the CREATE INDEX would throw.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_songs_owner ON songs (guild_id, owner_id, created_at)');
 }
 
 /**
@@ -584,27 +644,60 @@ export function clearWarnings(guildId, userId) {
 }
 
 // -- song library -------------------------------------------------------------
-// Persistent per-guild playlist: songs kept out of generate_music's output so
-// they can be replayed later (play_song/play_playlist in musicTools.js)
-// without spending on Lyria again. Capped small on purpose — this is a
-// "keep your favorites" list curated by voice command, not an archive, so a
-// hard cap forces a deliberate swap (delete_song, then save_song) rather
-// than growing forever.
+// Saved songs are kept out of generate_music's output so they can be replayed
+// later (play_song/play_playlist in musicTools.js) without spending on Lyria
+// again. Two kinds, told apart by owner_id:
+//   - a member's PERSONAL library (owner_id = their user id), capped small so
+//     it stays a "keep your favourites" list, not an archive
+//   - the shared SERVER library (owner_id NULL), which curators add to
+// Both caps are hard: a full library forces a deliberate delete_song before
+// the next save rather than growing without bound.
 export const SONG_LIBRARY_CAP = 10;
+export const SERVER_LIBRARY_CAP = 30;
 
-export function countSongs(guildId) {
-  return db.prepare('SELECT COUNT(*) AS n FROM songs WHERE guild_id = ?')
-    .get(String(guildId)).n;
+/** The right cap for a library, given its owner (null = server library). */
+export function libraryCap(ownerId) {
+  return ownerId === null || ownerId === undefined ? SERVER_LIBRARY_CAP : SONG_LIBRARY_CAP;
 }
 
-/** Metadata only, no audio blob — cheap to list. */
-export function listSongs(guildId) {
+/** SQL fragment matching a set of libraries. `ownerIds` is an array whose
+ * entries are user ids (a personal library) or null (the server library);
+ * returns `{ sql, params }` for splicing after `guild_id = ? AND`. An empty
+ * or all-null-filtered set yields `0` — matches nothing — rather than every
+ * row. */
+function libraryScope(ownerIds) {
+  const list = Array.isArray(ownerIds) ? ownerIds : [ownerIds];
+  const users = [...new Set(list.filter((o) => o !== null && o !== undefined).map(String))];
+  const parts = [];
+  const params = [];
+  if (users.length) {
+    parts.push(`owner_id IN (${users.map(() => '?').join(', ')})`);
+    params.push(...users);
+  }
+  if (list.some((o) => o === null || o === undefined)) parts.push('owner_id IS NULL');
+  return { sql: parts.length ? `(${parts.join(' OR ')})` : '0', params };
+}
+
+/** How many songs are in one library (ownerId null = server library). */
+export function countSongs(guildId, ownerId) {
+  const { sql, params } = libraryScope([ownerId]);
+  return db.prepare(`SELECT COUNT(*) AS n FROM songs WHERE guild_id = ? AND ${sql}`)
+    .get(String(guildId), ...params).n;
+}
+
+/** Metadata only, no audio blob — cheap to list. `ownerIds` accepts a single
+ * owner (user id, or null for the server library) or an array of them, so
+ * the DJ path can list across several members' libraries at once. */
+export function listSongs(guildId, ownerIds) {
+  const { sql, params } = libraryScope(ownerIds);
   return db.prepare(
-    'SELECT id, title, length, cost_usd, created_at FROM songs WHERE guild_id = ? ORDER BY created_at ASC',
-  ).all(String(guildId));
+    `SELECT id, title, length, cost_usd, created_at, created_by, owner_id
+       FROM songs WHERE guild_id = ? AND ${sql} ORDER BY created_at ASC`,
+  ).all(String(guildId), ...params);
 }
 
-/** One song's audio, for actually playing it. */
+/** One song's audio, for actually playing it. Keyed by id alone — the caller
+ * has already resolved it through findSong within an allowed scope. */
 export function getSongData(guildId, id) {
   const row = db.prepare(
     'SELECT id, title, data, media_type FROM songs WHERE guild_id = ? AND id = ?',
@@ -613,20 +706,33 @@ export function getSongData(guildId, id) {
   return { id: row.id, title: row.title, data: Buffer.from(row.data), mediaType: row.media_type };
 }
 
-/** Resolve a spoken/typed song reference to one library row: an exact id, an
- * exact title match, or — only when it's unambiguous — a partial title
- * match. Returns null rather than guessing when more than one song matches,
- * so musicTools.js can ask instead of playing or deleting the wrong track. */
-export function findSong(guildId, query) {
+/** Metadata for one song (no blob), including who owns and made it — for
+ * ownership checks before a delete or a move. */
+export function getSong(guildId, id) {
+  return db.prepare(
+    'SELECT id, title, length, owner_id, created_by, created_at FROM songs WHERE guild_id = ? AND id = ?',
+  ).get(String(guildId), Number(id)) || null;
+}
+
+/** Resolve a spoken/typed song reference to one library row within `ownerIds`
+ * (see listSongs for the shape): an exact id, an exact title match, or — only
+ * when it's unambiguous — a partial title match. Returns null rather than
+ * guessing when more than one song matches, so musicTools.js can ask instead
+ * of playing or deleting the wrong track. */
+export function findSong(guildId, query, ownerIds) {
   const gid = String(guildId);
   const text = String(query || '').trim();
   if (!text) return null;
+  const { sql: scope, params } = libraryScope(ownerIds);
   if (/^\d+$/.test(text)) {
-    const row = db.prepare('SELECT id, title FROM songs WHERE guild_id = ? AND id = ?')
-      .get(gid, Number(text));
+    const row = db.prepare(
+      `SELECT id, title, owner_id FROM songs WHERE guild_id = ? AND ${scope} AND id = ?`,
+    ).get(gid, ...params, Number(text));
     if (row) return row;
   }
-  const rows = db.prepare('SELECT id, title FROM songs WHERE guild_id = ?').all(gid);
+  const rows = db.prepare(
+    `SELECT id, title, owner_id FROM songs WHERE guild_id = ? AND ${scope}`,
+  ).all(gid, ...params);
   const lower = text.toLowerCase();
   const exact = rows.find((r) => r.title.toLowerCase() === lower);
   if (exact) return exact;
@@ -635,12 +741,13 @@ export function findSong(guildId, query) {
 }
 
 export function addSong(guildId, {
-  title, prompt, data, mediaType, length, costUsd, createdBy,
+  title, prompt, data, mediaType, length, costUsd, ownerId, createdBy,
 }) {
   const result = db.prepare(
-    'INSERT INTO songs (guild_id, title, prompt, data, media_type, length, cost_usd, created_by, created_at) '
-    + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO songs (guild_id, title, prompt, data, media_type, length, cost_usd, owner_id, created_by, created_at) '
+    + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(String(guildId), title, prompt, data, mediaType, length, costUsd ?? null,
+    ownerId === null || ownerId === undefined ? null : String(ownerId),
     createdBy ? String(createdBy) : null, now());
   return Number(result.lastInsertRowid);
 }
@@ -649,6 +756,45 @@ export function deleteSong(guildId, id) {
   const result = db.prepare('DELETE FROM songs WHERE guild_id = ? AND id = ?')
     .run(String(guildId), Number(id));
   return result.changes > 0;
+}
+
+/** Move a song between libraries (e.g. promoting a personal track into the
+ * server library). newOwnerId null = server library. */
+export function moveSong(guildId, id, newOwnerId) {
+  const result = db.prepare('UPDATE songs SET owner_id = ? WHERE guild_id = ? AND id = ?')
+    .run(newOwnerId === null || newOwnerId === undefined ? null : String(newOwnerId),
+      String(guildId), Number(id));
+  return result.changes > 0;
+}
+
+// -- music prefs -------------------------------------------------------------
+// One row per member who has ever touched the setting. Absent row = default
+// (not shareable).
+
+export function isMusicShareable(guildId, userId) {
+  const row = db.prepare('SELECT shareable FROM music_prefs WHERE guild_id = ? AND user_id = ?')
+    .get(String(guildId), String(userId));
+  return Boolean(row && row.shareable);
+}
+
+export function setMusicShareable(guildId, userId, on) {
+  db.prepare(
+    'INSERT INTO music_prefs (guild_id, user_id, shareable) VALUES (?, ?, ?) '
+    + 'ON CONFLICT (guild_id, user_id) DO UPDATE SET shareable = excluded.shareable',
+  ).run(String(guildId), String(userId), on ? 1 : 0);
+}
+
+/** Of `userIds`, those who have opted their library into sharing — used to
+ * decide whose songs the DJ may pull from among the people currently in a
+ * voice channel. */
+export function shareableUserIds(guildId, userIds) {
+  const ids = [...new Set((userIds || []).map(String))];
+  if (!ids.length) return [];
+  const rows = db.prepare(
+    `SELECT user_id FROM music_prefs WHERE guild_id = ? AND shareable = 1
+       AND user_id IN (${ids.map(() => '?').join(', ')})`,
+  ).all(String(guildId), ...ids);
+  return rows.map((r) => r.user_id);
 }
 
 // -- moderation logs ----------------------------------------------------------
