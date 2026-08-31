@@ -30,6 +30,8 @@ import { OWNER_ID } from './config.js';
 import { chat, OpenRouterError } from './openrouter.js';
 import { InsufficientCreditsError } from './credits/index.js';
 import * as db from './db.js';
+import { encodeTurn, HD_DIM, storeFor, dropStore } from './gudda/index.js';
+import { _resetStores as resetStores } from './gudda/store.js';
 
 const TURN_BUFFER = 60;        // raw turns kept per guild for consolidation
 const TURN_MAX_CHARS = 300;    // per-turn cap fed to the updater
@@ -157,7 +159,76 @@ export function recordTurn(guildId, speaker, text, { source = 'text', userId = n
   // by design — it must never depend on remembering to switch it on first.
   if (userId !== null && isOwnerId(userId)) db.appendManuscript(gid, userId, body);
 
+  ingestHd(gid, speaker, body, source, ts);
   triggerConsolidation(gid);
+}
+
+/**
+ * Fold the turn into the guild's hypervector accumulators.
+ *
+ * Scheduled rather than inline. Encoding a turn at dim=10000 costs ~7ms of
+ * straight CPU, and recordTurn() sits on the path of every single message — a
+ * busy server would spend a real fraction of the event loop on it. Nothing
+ * reads these vectors synchronously after a turn is recorded, so the work goes
+ * to a microtask; `schedule` preserves call order, which is all `turnCount % 5`
+ * needs to keep sampling the disjunctive accumulator evenly.
+ *
+ * Deliberately non-fatal too: this is an enrichment layer, and a vector that
+ * fails to encode must never cost us the turn itself, which by this point is
+ * already durably written.
+ */
+function ingestHd(gid, speaker, body, source, ts) {
+  schedule(() => {
+    try {
+      const store = hydratedStore(gid);
+      store.ingestTurn(encodeTurn(speaker, body, ts, source, HD_DIM));
+      if (store.needsSave) store.save(db);
+    } catch (err) {
+      console.warn('[memory] HD ingestion failed:', err?.message || err);
+    }
+  });
+}
+
+/**
+ * A guild's store, restored from SQLite the first time it is touched.
+ *
+ * Hydrating lazily rather than scanning every guild at boot keeps startup
+ * flat: a bot in fifty servers pays only for the ones that actually talk.
+ */
+const hydrated = new Set();
+
+function hydratedStore(guildId) {
+  const gid = String(guildId);
+  const store = storeFor(gid);
+  if (!hydrated.has(gid)) {
+    hydrated.add(gid);
+    try {
+      store.load(db);
+    } catch (err) {
+      console.warn('[memory] HD restore failed:', err?.message || err);
+    }
+  }
+  return store;
+}
+
+/** Drop a guild's HD state after its memory is wiped, so the next turn starts
+ *  from nothing rather than from vectors whose source turns are gone. */
+export function forgetHd(guildId) {
+  const gid = String(guildId);
+  hydrated.delete(gid);
+  dropStore(gid);
+}
+
+/**
+ * Hypervector context for a guild, with no I/O and no model call.
+ *
+ * Returns the conjunctive ("what this server keeps coming back to") and
+ * disjunctive ("the breadth of what gets discussed") accumulators, plus the
+ * member's profile vector when a user is named. Any of them may be null before
+ * enough turns have landed.
+ */
+export function getHdContext(guildId, userId = null) {
+  return hydratedStore(guildId).getContext(userId);
 }
 
 /**
@@ -431,6 +502,12 @@ function saveProfile(guildId, userId, name, fields) {
     if (value) existing[key] = String(value).slice(0, PROFILE_FIELD_MAX);
   }
   db.setMemory(guildId, `profile:${userId}`, JSON.stringify(existing));
+  // Keep the member's hypervector in step with the card it is derived from.
+  try {
+    hydratedStore(guildId).setProfileVector(userId, existing);
+  } catch (err) {
+    console.warn('[memory] HD profile update failed:', err?.message || err);
+  }
 }
 
 const ACRONYM_RE = /\b[A-Z]{2,6}\b|\b[A-Za-z]+\d+\b|\b\d+[A-Za-z]+\b/g;
@@ -496,6 +573,8 @@ export function _setConsolidationEnabled(value) {
 
 /** Test seam: drop all in-process buffers/watermarks. */
 export function _resetForTests() {
+  hydrated.clear();
+  resetStores();
   turns.clear();
   consolidating.clear();
   pending.clear();

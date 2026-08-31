@@ -891,6 +891,16 @@ async function renderSettings() {
               <input id="s-antispam_delete_seconds" type="number" min="0" max="604800"
                 value="${settings.antispam_delete_seconds || 3600}"></label>
           </div>
+          <div class="section-title">Raid sentinel (experimental)</div>
+          <div class="card">
+            <label class="toggle"><input type="checkbox" id="s-sentinel_enabled"
+              ${settings.sentinel_enabled ? "checked" : ""}> Watch for raid-like traffic (message
+              bursts, mention storms, join spikes) and log it — observe only, takes no action</label>
+            <label class="toggle"><input type="checkbox" id="s-sentinel_quarantine"
+              ${settings.sentinel_quarantine ? "checked" : ""}> Auto-mute on a raid alert (requires a
+              "muted" role; not yet calibrated — expect a high false-positive rate, watch the logs with
+              the toggle above before enabling this one)</label>
+          </div>
         </section>
 
         <section class="settings-panel ${activeTab === "access" ? "active" : ""}" data-panel="access">
@@ -1094,6 +1104,10 @@ async function renderSettings() {
           <div class="card">
             <label class="toggle"><input type="checkbox" id="s-pressure_enabled"
               ${settings.pressure_enabled ? "checked" : ""}> Speak up unprompted when pressure builds</label>
+            <label class="toggle"><input type="checkbox" id="s-hd_gate_enabled"
+              ${settings.hd_gate_enabled ? "checked" : ""}> Gate proactive replies through an HD
+              pre-filter before classifying (experimental, unreliable — the signal prototypes aren't
+              trained yet and this currently drops most real signal at random)</label>
           </div>
         </section>
 
@@ -1180,6 +1194,8 @@ async function renderSettings() {
       antispam_channel_threshold: parseInt($("#s-antispam_channel_threshold").value, 10) || 4,
       antispam_window_seconds: parseInt($("#s-antispam_window_seconds").value, 10) || 20,
       antispam_delete_seconds: parseInt($("#s-antispam_delete_seconds").value, 10) || 0,
+      sentinel_enabled: $("#s-sentinel_enabled").checked,
+      sentinel_quarantine: $("#s-sentinel_quarantine").checked,
       ai_enabled: $("#s-ai_enabled").checked,
       ai_model: $("#s-ai_model").value.trim(),
       ai_utility_model: $("#s-ai_utility_model").value.trim(),
@@ -1191,6 +1207,7 @@ async function renderSettings() {
       music_roles: [...$("#s-music_roles").selectedOptions].map((o) => o.value),
       music_curator_roles: [...$("#s-music_curator_roles").selectedOptions].map((o) => o.value),
       pressure_enabled: $("#s-pressure_enabled").checked,
+      hd_gate_enabled: $("#s-hd_gate_enabled").checked,
       deesc_enabled: $("#s-deesc_enabled").checked,
       deesc_harsh_language: $("#s-deesc_harsh_language").checked,
       ai_channels: [...$("#s-ai_channels").selectedOptions].map((o) => o.value),

@@ -19,12 +19,57 @@ import { botName } from './botName.js';
 import * as memory from './memory.js';
 import * as tts from './tts.js';
 import * as db from './db.js';
+import { BinaryHDVector, encodeText, sdmSnrThreshold } from './gudda/index.js';
 
 const TICK_EVERY_MS = 30_000;      // between engine ticks
 const CLASSIFY_MIN_INTERVAL = 20.0; // per-channel rate cap; messages in between batch
 const CLASSIFY_MIN_CHARS = 12;      // skip trivial messages
 const CONTEXT_LINES = 12;           // recent lines given to classifier/drafter
 const VOICE_CONFIDENCE_SCALE = 0.85; // transcripts are noisier than typed text
+
+// -- HD pre-classification gate (checklist phase 2) ---------------------------
+//
+// The idea: fingerprint the batch as a hypervector, compare it against one
+// prototype per signal type, and skip the background LLM call when nothing
+// scores above the Sparse Distributed Memory noise floor — a message that is
+// statistically indistinguishable from random with respect to every signal
+// cannot be carrying one.
+//
+// The idea is sound. These prototypes are not: `signalPrototype()` returns a
+// vector derived from the literal string "signal:blocker", with no training
+// step anywhere, so a real message's similarity to it is noise around 0.5 and
+// the threshold is 0.5071. Measured, it blocks actual blockers and passes
+// "lol nice". That is why `hd_gate_enabled` defaults to false and why this
+// runs after the rate cap rather than before — with the gate off, the cost is
+// one settings lookup.
+//
+// To make it real, train each prototype by bundling encodeText() over a corpus
+// of messages known to carry that signal, and persist the result. The wiring
+// below needs no changes for that; only `signalPrototype` does.
+
+const HD_DIM = 10000;
+const HD_SIGNALS = ['incorrect_claim', 'blocker', 'safety_concern', 'promised_followup'];
+
+/** SDM signal-to-noise radius, expressed as an XNOR similarity in [0,1]. */
+export const HD_SIM_THRESHOLD = 1 - sdmSnrThreshold(HD_DIM) / HD_DIM;
+
+function signalPrototype(source) {
+  return BinaryHDVector.fromKey(`signal:${source}`, HD_DIM);
+}
+
+/** Similarity of `text` to each signal prototype. */
+export function hdPreclassify(text) {
+  if (!text || !text.trim()) return {};
+  const fp = encodeText(text, HD_DIM);
+  return Object.fromEntries(
+    HD_SIGNALS.map((s) => [s, fp.xnorPopcountSimilarity(signalPrototype(s))]),
+  );
+}
+
+/** True when at least one prototype clears the noise floor. */
+export function hdAnySignal(scores) {
+  return Object.values(scores).some((s) => s >= HD_SIM_THRESHOLD);
+}
 
 const CLASSIFY_PROMPT = ({ sources, context, text }) => (
   'You monitor a Discord channel for an assistant bot that may speak up '
@@ -142,6 +187,22 @@ async function classifyAndIngest(guild, channelId, userId, author, text, now, co
   lastClassify.set(key, now);
   const batch = pending.join('\n');
   pendingLines.set(key, []);
+
+  // HD pre-classification gate — opt-in per guild, see the note above.
+  if (db.getSetting(guildId, 'hd_gate_enabled')) {
+    const scores = hdPreclassify(batch);
+    const passed = hdAnySignal(scores);
+    const fmt = Object.entries(scores)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v.toFixed(4)}`).join(', ');
+    console.log(`[proactive] HD preclassify [${channelId}]: ${fmt} `
+      + `signal=${passed} thresh=${HD_SIM_THRESHOLD.toFixed(4)}`);
+    if (!passed) {
+      console.log(`[proactive] HD gate: skipped LLM classify for channel ${channelId} `
+        + '(all prototypes below the SNR floor)');
+      return;
+    }
+  }
 
   const engine = engineFor(guildId);
   const recent = (context.get(key) || []).slice(0, -1);

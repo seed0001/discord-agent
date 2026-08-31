@@ -36,6 +36,7 @@ import { botName } from '../botName.js';
 import { logAction } from '../utils.js';
 import * as logbuffer from '../logbuffer.js';
 import * as voice from '../voice.js';
+import * as memory from '../memory.js';
 import * as db from '../db.js';
 import { ttsSettingsMeta } from '../ttsConfig.js';
 
@@ -659,6 +660,10 @@ function buildRoutes(client) {
     ['DELETE', '/api/guilds/:guildId/memory', async ({ params }) => {
       const g = getGuild(client, params.guildId);
       db.clearMemory(g.id);
+      // Also drop the in-process hypervectors — clearing only the table would
+      // leave the accumulators alive in memory and persist them again on the
+      // next save, quietly undoing the wipe.
+      memory.forgetHd(g.id);
       await logAction(g, 'memory_wipe', DASHBOARD_ACTOR, null, 'memory wiped from dashboard');
       return { ok: true };
     }, { level: 'admin' }],
