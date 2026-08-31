@@ -98,18 +98,72 @@ Returns `{ conjunctive, disjunctive, profile }`, any of which may be `null`
 before enough turns have landed. All vectors are already in memory — no I/O
 on the read path.
 
-**Nothing currently consumes this.** It's infrastructure: the accumulators
-are live and persisted, but no prompt, tool, or classifier reads
-`getHdContext` yet. Wiring a consumer is future work — the one thing that
-was tried (gating the proactive-speech classifier on relevance to live
+**Nothing consumes `getHdContext` itself** (the conjunctive/disjunctive
+accumulators) — it stays infrastructure. The one thing that was tried
+against it (gating the proactive-speech classifier on relevance to live
 context) didn't pan out: turn-level vectors separate relevant from
 irrelevant drafts by only ~0.04 against ~0.26 at plain text level, because
 `encodeTurn` binds four role-filler pairs and only one of them is the text
 itself. See the block comment above `hdPreclassify` in
 `nodebot/src/proactive.js` and the "Fix two encoder defects" commit for the
-measurements.
+measurements. There is a real consumer now, but it's built on a different
+structure — see 3.5.
 
-### 3.5 Member profile superposition
+### 3.5 Resonance — a real consumer, on a different structure
+
+`getContext()` (`nodebot/src/memory.js`, injected into the system prompt
+every reply) now includes an optional line:
+
+```
+[RESONANT MEMORY — a loose echo from earlier here, not a quote or a fact]
+jordan said something in a similar vein a while back: "we should really
+add an index on guild_id and seq"
+```
+
+The first attempt at this used a third accumulator built the same way as
+conjunctive/disjunctive — bundle `encodeText()` of every turn into one
+running sum. Measured (see `gudda.test.js`), it didn't work: bundling more
+than a handful of *different* messages saturates, and a same-topic query can
+score *lower* against the result than an unrelated one does — the sum ends
+up dominated by whatever's frequent across everything (common short words),
+not what's distinctive to any one topic. This is the same capacity problem
+that broke the phase 2 gate, one layer over.
+
+What's actually deployed instead, in `HDMemoryStore.recentText`
+(`gudda/store.js`): a bounded window (`RECENT_TEXT_CAP` = 150) of individual,
+*unbundled* `encodeText()` vectors, one per recent turn, kept alongside the
+accumulators rather than folded into them. A query finds its single best
+match by direct pairwise comparison — nearest-neighbor, not summation — which
+is the shape of comparison that was actually measured to carry signal
+(`encodeText separates same-topic from different-topic text`, 0.7679 vs
+0.5110 for two individual texts). On a small hand-built corpus, best-match
+scores for on-topic queries land at 0.588–0.606 and for unrelated queries at
+0.529–0.569 — a real but modest gap (~0.02), not a clean separation.
+`RESONANCE_THRESHOLD` (0.58, in `memory.js`) sits between them, biased
+slightly toward the on-topic side: staying quiet on a genuine match costs
+less than speaking up about something unrelated.
+
+Mechanics:
+- `recordTurn()` → `ingestHd()` calls `store.recordRecentText(seq, speaker,
+  body)` alongside the existing `ingestTurn()` call, on the same scheduled
+  microtask.
+- The window is **not** persisted to `hd_memory` — it's rebuilt from
+  `db.turns` (already permanent) lazily, the first time a guild's store is
+  touched after a restart, via `store.seedRecentText()`. This runs on its own
+  scheduled microtask, separate from the (synchronous, cheap) accumulator
+  restore in `hydratedStore` — encoding ~150 past turns costs about a second
+  of CPU, and that must never block the reply path that first touches the
+  guild.
+- `getContext()` reads the current turn from its own in-process buffer (the
+  turn was just recorded moments earlier in the same handler) and calls
+  `store.findResonant(text, { beforeSeq })`, excluding anything within the
+  last 40 turns — the deepest of textChat's `HISTORY_LIMIT` and voice's
+  `CONTEXT_TURNS` — so a hit only ever surfaces something not already visible
+  in the model's own transcript.
+- Never a fact, never specifics beyond the one matched line — the framing in
+  the injected text is deliberate.
+
+### 3.6 Member profile superposition
 
 After `memory.js`'s `saveProfile()` writes a profile card's JSON to SQLite,
 it calls `store.setProfileVector(userId, fields)`, which superposes the
@@ -129,6 +183,10 @@ field vectors into one member hypervector via `fromKey` + `bundleAll`.
    rebuild the weight from there.
 4. **10000 dimensions** throughout (`HD_DIM` / `DEFAULT_DIM` in `gudda/hd.js`
    and `gudda/store.js`).
+5. **Resonance is a list, not an accumulator** — see 3.5. Any future
+   "consume the accumulators directly" idea should measure the same way
+   (individual comparison vs. a bundled sum) before assuming bundling is fine
+   for a given use; it wasn't, twice now (phase 2's gate, this).
 
 ## Verification
 
@@ -141,3 +199,12 @@ field vectors into one member hypervector via `fromKey` + `bundleAll`.
 - SQLite bit-packing roundtrip
 - parity fixtures (`gudda-parity.json`) pin the Node output bit-for-bit
   against the original Python, generated by actually running it
+- resonance: `findResonant`/`recordRecentText`/`seedRecentText` behavior
+  (cap eviction, `beforeSeq` exclusion, sorted rebuild), the topic-attribution
+  measurement, and the on-topic-vs-unrelated threshold measurement behind
+  `RESONANCE_THRESHOLD`
+
+`nodebot/test/memory.test.js` covers the integration: `getContext()` surfaces
+a resonant match buried outside the visible transcript, stays silent when
+nothing resonates, and never throws before the resonance window has finished
+its background seed.

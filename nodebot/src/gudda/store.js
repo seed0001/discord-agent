@@ -14,15 +14,32 @@
 //
 // The point of all of this is that a query costs no I/O and no model call: the
 // vectors are already in memory, and comparing two of them is a popcount.
+//
+// A third structure, `recentText`, is deliberately NOT an accumulator. Measured
+// (see gudda.test.js and docs/phase-3-hd-memory-ingestion.md): bundling many
+// different messages' encodeText() vectors into one running sum saturates —
+// the sign-threshold ends up dominated by whatever n-grams are frequent across
+// everything, not what's distinctive to any one topic, to the point that a
+// same-topic query can score *lower* than an unrelated one. Individual
+// encodeText() vectors compared directly, with no bundling, don't have that
+// problem — that comparison is what was actually measured to carry signal.
+// So recentText keeps a bounded window of unbundled per-turn vectors and finds
+// the single best match by direct comparison, nearest-neighbor style, rather
+// than folding them together.
 
 import {
-  BinaryHDVector, HDVector, bundleAll, DEFAULT_DIM,
+  BinaryHDVector, HDVector, bundleAll, encodeText, DEFAULT_DIM,
 } from './hd.js';
 
 export const HD_DIM = DEFAULT_DIM;
 
 /** Persist to SQLite every N ingested turns. */
 export const SAVE_EVERY = 25;
+
+/** How many recent turns' text vectors to keep for resonance lookups. Kept in
+ *  memory only, rebuilt from db.turns (already permanently stored) on
+ *  restart — not worth a second copy of the text in its own table. */
+export const RECENT_TEXT_CAP = 150;
 
 /** Profile card fields that get superposed into a member's vector. */
 const PROFILE_FIELDS = ['goals', 'active_projects', 'constraints', 'vibe_notes'];
@@ -37,6 +54,8 @@ export class HDMemoryStore {
     this.disjunctive = null;
     /** @type {Map<string, BinaryHDVector>} */
     this.profileVectors = new Map();
+    /** @type {{seq: number, speaker: string, text: string, vec: BinaryHDVector}[]} */
+    this.recentText = [];
     this.turnCount = 0;
     this.saveCounter = 0;
   }
@@ -62,6 +81,28 @@ export class HDMemoryStore {
     return this.saveCounter >= SAVE_EVERY;
   }
 
+  /** Add one turn's raw text to the resonance window, unbundled — see the
+   *  header note on why this stays a list instead of an accumulator. */
+  recordRecentText(seq, speaker, text) {
+    if (!text) return;
+    this.recentText.push({
+      seq, speaker, text, vec: encodeText(text, this.dim),
+    });
+    while (this.recentText.length > RECENT_TEXT_CAP) this.recentText.shift();
+  }
+
+  /** Rebuild the resonance window from persisted turns (newest-first or any
+   *  order — sorted here) after a restart. `rows` is db.getChatLog() shape:
+   *  {seq, speaker, text}[]. */
+  seedRecentText(rows) {
+    this.recentText = rows
+      .slice(0, RECENT_TEXT_CAP)
+      .map((r) => ({
+        seq: r.seq, speaker: r.speaker, text: r.text, vec: encodeText(r.text, this.dim),
+      }))
+      .sort((a, b) => a.seq - b.seq);
+  }
+
   // -- queries ---------------------------------------------------------------
 
   getConjunctive() {
@@ -74,6 +115,31 @@ export class HDMemoryStore {
 
   getProfileVector(userId) {
     return this.profileVectors.get(String(userId)) || null;
+  }
+
+  /**
+   * Nearest neighbor in the resonance window, or null if the window is empty.
+   *
+   * `beforeSeq` excludes anything at or after it — the caller uses this to
+   * skip turns already visible in the model's own recent-transcript context,
+   * so a hit only ever surfaces something not already in view.
+   *
+   * @returns {{similarity: number, seq: number, speaker: string, text: string} | null}
+   */
+  findResonant(text, { beforeSeq = Infinity } = {}) {
+    if (!text || !this.recentText.length) return null;
+    const q = encodeText(text, this.dim);
+    let best = null;
+    for (const entry of this.recentText) {
+      if (entry.seq >= beforeSeq) continue;
+      const similarity = q.xnorPopcountSimilarity(entry.vec);
+      if (!best || similarity > best.similarity) {
+        best = {
+          similarity, seq: entry.seq, speaker: entry.speaker, text: entry.text,
+        };
+      }
+    }
+    return best;
   }
 
   /** Everything the caller might want, with no I/O. */

@@ -31,13 +31,31 @@ import { chat, OpenRouterError } from './openrouter.js';
 import { InsufficientCreditsError } from './credits/index.js';
 import * as db from './db.js';
 import { encodeTurn, HD_DIM, storeFor, dropStore } from './gudda/index.js';
-import { _resetStores as resetStores } from './gudda/store.js';
+import { _resetStores as resetStores, RECENT_TEXT_CAP } from './gudda/store.js';
 
 const TURN_BUFFER = 60;        // raw turns kept per guild for consolidation
 const TURN_MAX_CHARS = 300;    // per-turn cap fed to the updater
 const WORKING_MAX = 2500;      // char caps requested from the model
 const DURABLE_MAX = 5000;
 const PROFILE_FIELD_MAX = 800; // per-field cap on a profile card
+
+// HD resonance — see the "resonance" tests in gudda.test.js for how these
+// were measured, and the header note on gudda/store.js for why this is a
+// nearest-neighbor search rather than an accumulator comparison.
+//
+// 0.58 sits between measured on-topic best-matches (0.588-0.606) and
+// measured unrelated best-matches (0.529-0.569) on a small hand-built
+// corpus — a real but modest gap (~0.02), not a clean separation, so this
+// leans toward the on-topic side of the midpoint rather than sitting exactly
+// on it: staying quiet on a genuine match is a smaller loss than speaking up
+// about something unrelated. Expect this to need revisiting against real
+// traffic — see the "resonance separates on-topic from unrelated queries"
+// test in gudda.test.js for the actual numbers behind it.
+const RESONANCE_THRESHOLD = 0.58;
+// Skip anything still inside the model's own visible transcript (40 turns —
+// the deepest of textChat's HISTORY_LIMIT and voice's CONTEXT_TURNS), so a
+// hit only ever surfaces something not already in view.
+const RESONANCE_RECENT_EXCLUDE = 40;
 
 // Preservation spot-check: a member's raw turns this round must overlap this
 // much (by significant-word set) with what the model kept about them, once
@@ -159,7 +177,7 @@ export function recordTurn(guildId, speaker, text, { source = 'text', userId = n
   // by design — it must never depend on remembering to switch it on first.
   if (userId !== null && isOwnerId(userId)) db.appendManuscript(gid, userId, body);
 
-  ingestHd(gid, speaker, body, source, ts);
+  ingestHd(gid, speaker, body, source, ts, seq);
   triggerConsolidation(gid);
 }
 
@@ -177,11 +195,12 @@ export function recordTurn(guildId, speaker, text, { source = 'text', userId = n
  * fails to encode must never cost us the turn itself, which by this point is
  * already durably written.
  */
-function ingestHd(gid, speaker, body, source, ts) {
+function ingestHd(gid, speaker, body, source, ts, seq) {
   schedule(() => {
     try {
       const store = hydratedStore(gid);
       store.ingestTurn(encodeTurn(speaker, body, ts, source, HD_DIM));
+      store.recordRecentText(seq, speaker, body);
       if (store.needsSave) store.save(db);
     } catch (err) {
       console.warn('[memory] HD ingestion failed:', err?.message || err);
@@ -194,6 +213,15 @@ function ingestHd(gid, speaker, body, source, ts) {
  *
  * Hydrating lazily rather than scanning every guild at boot keeps startup
  * flat: a bot in fifty servers pays only for the ones that actually talk.
+ *
+ * The resonance window (RECENT_TEXT_CAP turns' worth of individual text
+ * vectors) is seeded from db.turns separately, and always on a scheduled
+ * microtask — never inline here. getContext() calls this function
+ * synchronously on the reply path, and encoding ~150 past turns to rebuild
+ * the window costs about a second of CPU; the accumulator restore above is
+ * just bit-unpacking and stays cheap enough to do inline. Until the seed
+ * finishes, resonance lookups simply find nothing, which is a fine, silent
+ * way to be missing for one restart's first reply or two.
  */
 const hydrated = new Set();
 
@@ -207,6 +235,13 @@ function hydratedStore(guildId) {
     } catch (err) {
       console.warn('[memory] HD restore failed:', err?.message || err);
     }
+    schedule(() => {
+      try {
+        store.seedRecentText(db.getChatLog(gid, { limit: RECENT_TEXT_CAP }));
+      } catch (err) {
+        console.warn('[memory] HD resonance-window seed failed:', err?.message || err);
+      }
+    });
   }
   return store;
 }
@@ -334,6 +369,31 @@ export function recall(guildId, { member, query, limit = 40 } = {}) {
 }
 
 /**
+ * A loose "this rhymes with something older" line, or '' if nothing clears
+ * the bar. Compares the current turn's text against the guild's resonance
+ * window (see gudda/store.js) and surfaces the single best match — never a
+ * fact, never specifics beyond the one matched line, and never anything
+ * still inside the model's own visible transcript.
+ */
+function resonanceLine(guildId) {
+  try {
+    const gid = String(guildId);
+    const buf = turns.get(gid);
+    if (!buf || !buf.length) return '';
+    const current = buf[buf.length - 1];
+    const match = hydratedStore(gid).findResonant(current.text, {
+      beforeSeq: current.seq - RESONANCE_RECENT_EXCLUDE,
+    });
+    if (!match || match.similarity < RESONANCE_THRESHOLD) return '';
+    return '[RESONANT MEMORY — a loose echo from earlier here, not a quote or a fact]\n'
+      + `${match.speaker} said something in a similar vein a while back: "${match.text.slice(0, 200)}"`;
+  } catch (err) {
+    console.warn('[memory] resonance lookup failed:', err?.message || err);
+    return '';
+  }
+}
+
+/**
  * Memory block for injection into the system prompt ('' if empty).
  *
  * When userId is given and that member has a profile card, it's loaded
@@ -350,6 +410,8 @@ export function getContext(guildId, userId = null) {
   const working = db.getMemory(guildId, 'working')?.content || '';
   if (durable) parts.push(`[DURABLE MEMORY — long-term facts you know]\n${durable}`);
   if (working) parts.push(`[WORKING MEMORY — the current conversation context]\n${working}`);
+  const resonance = resonanceLine(guildId);
+  if (resonance) parts.push(resonance);
   return parts.join('\n\n');
 }
 

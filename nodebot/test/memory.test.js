@@ -20,6 +20,11 @@ function withDb(fn) {
     try {
       await fn();
     } finally {
+      // Drain anything a test left scheduled on a microtask (HD ingestion,
+      // the resonance-window seed) before the database goes away under it —
+      // otherwise it fires later against a closed or already-reassigned db
+      // handle. Harmless (memory.js swallows the error), but noisy.
+      await new Promise((r) => { setImmediate(r); });
       db.closeDb();
       rmSync(dir, { recursive: true, force: true });
     }
@@ -180,6 +185,39 @@ test('a corrupt profile card is ignored rather than crashing context building', 
   const ctx = memory.getContext('1', '42');
   assert.match(ctx, /still works/);
   assert.doesNotMatch(ctx, /SPEAKER PROFILE/);
+}));
+
+// -- HD resonance -------------------------------------------------------------
+// ingestHd's own work (and the resonance-window seed inside hydratedStore) is
+// scheduled on a microtask, not inline — `await` a tick after recordTurn so
+// it has landed before asserting on getContext().
+
+test('getContext surfaces a resonant match buried well outside the visible transcript', withDb(async () => {
+  memory.recordTurn('1', 'jordan', 'we should add an index on guild_id and seq', { userId: '9' });
+  // Push the buried turn's seq far enough back that it clears
+  // RESONANCE_RECENT_EXCLUDE (40) once the query turn below lands.
+  for (let i = 0; i < 44; i += 1) {
+    memory.recordTurn('1', 'jordan', `filler turn number ${i}`, { userId: '9' });
+  }
+  memory.recordTurn('1', 'jordan', 'should we add another index to speed up that query', { userId: '9' });
+  await new Promise((r) => { setImmediate(r); });
+
+  const ctx = memory.getContext('1', '9');
+  assert.match(ctx, /RESONANT MEMORY/);
+  assert.match(ctx, /index on guild_id and seq/);
+}));
+
+test('getContext stays silent when nothing resonates', withDb(async () => {
+  memory.recordTurn('1', 'jordan', 'a completely unrelated aside about the weather today', { userId: '9' });
+  await new Promise((r) => { setImmediate(r); });
+  const ctx = memory.getContext('1', '9');
+  assert.doesNotMatch(ctx, /RESONANT MEMORY/);
+}));
+
+test('getContext never throws before the resonance window has been seeded', withDb(() => {
+  // No await: the scheduled ingest/seed microtasks have not run yet.
+  memory.recordTurn('1', 'jordan', 'hello there', { userId: '9' });
+  assert.doesNotThrow(() => memory.getContext('1', '9'));
 }));
 
 // -- restart recovery -------------------------------------------------------

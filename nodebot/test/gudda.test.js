@@ -28,9 +28,10 @@ import {
   sdmSnrThreshold, sdmMemRadius, sdmCentroidRadius,
   packBits, unpackBits, nativeAvailable,
   DiscordSentinel, DiscordEventEncoder, EVENT_FIELDS,
-  HDMemoryStore,
+  HDMemoryStore, DEFAULT_DIM,
 } from '../src/gudda/index.js';
 import { MT19937, stableHash } from '../src/gudda/rng.js';
+import { RECENT_TEXT_CAP } from '../src/gudda/store.js';
 import { hdPreclassify, hdAnySignal, HD_SIM_THRESHOLD } from '../src/proactive.js';
 import * as db from '../src/db.js';
 
@@ -408,6 +409,152 @@ test('distinct members get distinguishable profile vectors', () => {
   const sim = store.getProfileVector('1').xnorPopcountSimilarity(store.getProfileVector('2'));
   assert.ok(sim < 0.7, `expected distinguishable profiles, got ${sim}`);
 });
+
+test('findResonant returns null with an empty window', () => {
+  const store = new HDMemoryStore('1', D);
+  assert.equal(store.findResonant('does this match anything'), null);
+});
+
+test('recordRecentText evicts beyond the cap, oldest first', () => {
+  const store = new HDMemoryStore('1', D);
+  for (let i = 0; i < RECENT_TEXT_CAP + 10; i += 1) {
+    store.recordRecentText(i, 'a', `turn number ${i}`);
+  }
+  assert.equal(store.recentText.length, RECENT_TEXT_CAP);
+  assert.equal(store.recentText[0].seq, 10); // the oldest 10 were evicted
+});
+
+test('findResonant finds the nearest match and beforeSeq excludes candidates', () => {
+  const store = new HDMemoryStore('1', D);
+  store.recordRecentText(1, 'a', 'we should add an index on guild_id and seq');
+  store.recordRecentText(2, 'b', 'can we play the song in the voice channel now');
+  const hit = store.findResonant('should we add another index to speed up that query');
+  assert.ok(hit);
+  assert.equal(hit.seq, 1, 'should match the db-topic turn, not the music one');
+
+  assert.equal(
+    store.findResonant('should we add another index', { beforeSeq: 1 }),
+    null,
+    'excluding the only relevant candidate by seq should leave nothing',
+  );
+});
+
+test('seedRecentText rebuilds the window from persisted turn rows, sorted by seq', () => {
+  const store = new HDMemoryStore('1', D);
+  store.seedRecentText([
+    { seq: 5, speaker: 'b', text: 'later turn' },
+    { seq: 2, speaker: 'a', text: 'earlier turn' },
+  ]);
+  assert.deepEqual(store.recentText.map((e) => e.seq), [2, 5]);
+});
+
+test('resonance (nearest-neighbor) separates topics where a bundled accumulator could not', () => {
+  // See 'CHARACTERISATION: turn vectors do not support topical retrieval'
+  // below, and the header note on gudda/store.js: bundling several different
+  // messages' text vectors into one running accumulator was measured to
+  // saturate — a same-topic query can score *lower* against it than an
+  // unrelated one does. Comparing individual vectors directly, with no
+  // bundling, is what recentText/findResonant does, and this measures the
+  // separation it actually gets. Uses DEFAULT_DIM (10000), the dimension the
+  // bot actually runs at — not the parity fixture's D (256), which is far
+  // too low-capacity to show this kind of separation meaningfully.
+  const store = new HDMemoryStore('1', DEFAULT_DIM);
+  const dbTopic = [
+    'can we migrate the schema to add a new column',
+    'the sqlite query is timing out on large tables',
+    'I think we need an index on guild_id and seq',
+    'db.js handles all the schema migrations at startup',
+    'why is the turns table growing so fast',
+  ];
+  const musicTopic = [
+    'can you generate a lo-fi beat for the study channel',
+    'the music library needs a shared server playlist',
+    'Lyria took a while to generate that last track',
+    'can we play the song in the voice channel now',
+    'the voice follow-up window closed too early',
+  ];
+  let seq = 1;
+  for (const t of dbTopic) store.recordRecentText(seq += 1, 'a', t);
+  for (const t of musicTopic) store.recordRecentText(seq += 1, 'b', t);
+
+  // The meaningful comparison is per-query attribution — does each query's
+  // single best match actually come from its own topic's pool — not the raw
+  // similarity magnitude across two different queries, which isn't
+  // comparable (a query's own vector always has some baseline self-affinity
+  // to the corpus regardless of which pool the winner falls in).
+  const dbQuery = store.findResonant('should we add another index to speed up that query');
+  const musicQuery = store.findResonant('can you skip to the next song in the queue');
+  assert.ok(
+    dbTopic.includes(dbQuery.text),
+    `expected a db-topic query to match a db turn, got: "${dbQuery.text}"`,
+  );
+  assert.ok(
+    musicTopic.includes(musicQuery.text),
+    `expected a music-topic query to match a music turn, got: "${musicQuery.text}"`,
+  );
+});
+
+test('resonance best-match scores separate on-topic from unrelated queries', () => {
+  // The actual measurement behind memory.js's RESONANCE_THRESHOLD (0.58).
+  // Small corpus, modest gap — this pins roughly where that gap sits so a
+  // future encoder change that erodes it fails here instead of silently
+  // making the feature always-silent or trigger-happy in production. Uses
+  // DEFAULT_DIM (10000) — the same reasoning as the test above.
+  const store = new HDMemoryStore('1', DEFAULT_DIM);
+  const dbTopic = [
+    'can we migrate the schema to add a new column',
+    'the sqlite query is timing out on large tables',
+    'I think we need an index on guild_id and seq',
+    'db.js handles all the schema migrations at startup',
+    'why is the turns table growing so fast',
+  ];
+  const musicTopic = [
+    'can you generate a lo-fi beat for the study channel',
+    'the music library needs a shared server playlist',
+    'Lyria took a while to generate that last track',
+    'can we play the song in the voice channel now',
+    'the voice follow-up window closed too early',
+  ];
+  let seq = 0;
+  for (const t of dbTopic) store.recordRecentText(seq += 1, 'a', t);
+  for (const t of musicTopic) store.recordRecentText(seq += 1, 'b', t);
+
+  const onTopic = [
+    'should we add another index to speed up that query',
+    'the migration keeps failing on that same table',
+  ];
+  const unrelated = [
+    "what's the weather like where you are today",
+    'did you catch the game last night',
+    'lol nice',
+  ];
+  const onTopicScores = onTopic.map((q) => store.findResonant(q).similarity);
+  const unrelatedScores = unrelated.map((q) => store.findResonant(q).similarity);
+
+  assert.ok(
+    Math.min(...onTopicScores) > Math.max(...unrelatedScores),
+    `expected on-topic scores ${onTopicScores} to clear unrelated scores ${unrelatedScores}`,
+  );
+  assert.ok(
+    Math.min(...onTopicScores) > 0.58,
+    `RESONANCE_THRESHOLD (0.58) should sit below every on-topic score, got ${onTopicScores}`,
+  );
+  assert.ok(
+    Math.max(...unrelatedScores) < 0.58,
+    `RESONANCE_THRESHOLD (0.58) should sit above every unrelated score, got ${unrelatedScores}`,
+  );
+});
+
+test('save/load leave the resonance window alone — it is rebuilt from db.turns, not hd_memory', withDb(() => {
+  const store = new HDMemoryStore('55', D);
+  store.recordRecentText(1, 'a', 'something said once');
+  store.ingestTurn(encodeTurn('a', 'something said once', 1, 'text', D));
+  store.save(db);
+
+  const restored = new HDMemoryStore('55', D);
+  restored.load(db);
+  assert.equal(restored.recentText.length, 0);
+}));
 
 test('store round-trips through SQLite', withDb(() => {
   const store = new HDMemoryStore('77', D);
