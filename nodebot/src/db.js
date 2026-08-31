@@ -261,6 +261,17 @@ export const DEFAULTS = {
   banned_words: [],
   block_invites: false,
   max_mentions: 0,
+  // mention fan-out: a member pinging a long run of *different* members in
+  // separate single-mention messages within a short window ("hi @X" to
+  // everyone on the member list, one message at a time) is a scrape/raid
+  // pattern max_mentions can't see, since each individual message only ever
+  // carries one mention. On by default, same reasoning as antispam below:
+  // no legitimate member individually greets 5+ different people in half a
+  // minute.
+  mention_fanout_enabled: true,
+  mention_fanout_threshold: 5,
+  mention_fanout_window_seconds: 30,
+  mention_fanout_delete_seconds: 3600,
   // cross-channel spam ban: a member blasting the same message/attachment
   // into several channels within a short window gets auto-banned and their
   // recent messages purged server-wide (deleteMessageSeconds on the ban

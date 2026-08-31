@@ -876,6 +876,22 @@ async function renderSettings() {
             <label class="field"><span class="lbl">Max mentions per message (0 = off)</span>
               <input id="s-max_mentions" type="number" min="0" value="${settings.max_mentions || 0}"></label>
           </div>
+          <div class="section-title">Mention fan-out ban</div>
+          <div class="card">
+            <label class="toggle"><input type="checkbox" id="s-mention_fanout_enabled"
+              ${settings.mention_fanout_enabled ? "checked" : ""}> Auto-ban members who ping many
+              different people one at a time (e.g. going down the member list) — catches what max
+              mentions can't, since each message only carries one ping</label>
+            <label class="field"><span class="lbl">Distinct people pinged within the window to trigger a ban</span>
+              <input id="s-mention_fanout_threshold" type="number" min="2"
+                value="${settings.mention_fanout_threshold || 5}"></label>
+            <label class="field"><span class="lbl">Window (seconds)</span>
+              <input id="s-mention_fanout_window_seconds" type="number" min="1"
+                value="${settings.mention_fanout_window_seconds || 30}"></label>
+            <label class="field"><span class="lbl">Message history to delete on ban (seconds, max 604800)</span>
+              <input id="s-mention_fanout_delete_seconds" type="number" min="0" max="604800"
+                value="${settings.mention_fanout_delete_seconds || 3600}"></label>
+          </div>
           <div class="section-title">Cross-channel spam ban</div>
           <div class="card">
             <label class="toggle"><input type="checkbox" id="s-antispam_enabled"
@@ -1190,6 +1206,10 @@ async function renderSettings() {
       block_invites: $("#s-block_invites").checked,
       banned_words: $("#s-banned_words").value.split(",").map((w) => w.trim()).filter(Boolean),
       max_mentions: parseInt($("#s-max_mentions").value, 10) || 0,
+      mention_fanout_enabled: $("#s-mention_fanout_enabled").checked,
+      mention_fanout_threshold: parseInt($("#s-mention_fanout_threshold").value, 10) || 5,
+      mention_fanout_window_seconds: parseInt($("#s-mention_fanout_window_seconds").value, 10) || 30,
+      mention_fanout_delete_seconds: parseInt($("#s-mention_fanout_delete_seconds").value, 10) || 0,
       antispam_enabled: $("#s-antispam_enabled").checked,
       antispam_channel_threshold: parseInt($("#s-antispam_channel_threshold").value, 10) || 4,
       antispam_window_seconds: parseInt($("#s-antispam_window_seconds").value, 10) || 20,

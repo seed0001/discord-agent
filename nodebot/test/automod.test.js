@@ -4,16 +4,18 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import * as db from '../src/db.js';
-import { findViolation, checkMessage } from '../src/automod.js';
+import { findViolation, checkMessage, recordMentionFanoutAndCheck, _resetForTests } from '../src/automod.js';
 
 function withDb(fn) {
   return async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'nodebot-automod-test-'));
     db.initDb(path.join(dir, 'test.db'));
+    _resetForTests();
     try {
       await fn();
     } finally {
       db.closeDb();
+      _resetForTests();
       rmSync(dir, { recursive: true, force: true });
     }
   };
@@ -93,4 +95,121 @@ test('checkMessage deletes a violating message and logs it', withDb(async () => 
   assert.equal(db.getLogs('1').length, 1);
   assert.equal(db.getLogs('1')[0].action, 'automod');
   assert.match(sent[0], /removed/);
+}));
+
+test('recordMentionFanoutAndCheck ignores messages with no targets', withDb(() => {
+  assert.equal(recordMentionFanoutAndCheck('g', 'u', []), null);
+}));
+
+test('recordMentionFanoutAndCheck does not trigger below the threshold', withDb(() => {
+  const opts = { threshold: 3, windowSeconds: 30 };
+  let r = recordMentionFanoutAndCheck('g', 'u', ['a'], opts, 1000);
+  assert.equal(r.triggered, false);
+  assert.equal(r.targetCount, 1);
+  r = recordMentionFanoutAndCheck('g', 'u', ['b'], opts, 1100);
+  assert.equal(r.triggered, false);
+  assert.equal(r.targetCount, 2);
+}));
+
+test('recordMentionFanoutAndCheck triggers once enough distinct people are pinged', withDb(() => {
+  const opts = { threshold: 3, windowSeconds: 30 };
+  recordMentionFanoutAndCheck('g', 'u', ['a'], opts, 1000);
+  recordMentionFanoutAndCheck('g', 'u', ['b'], opts, 1100);
+  const r = recordMentionFanoutAndCheck('g', 'u', ['c'], opts, 1200);
+  assert.equal(r.triggered, true);
+  assert.equal(r.targetCount, 3);
+}));
+
+test('recordMentionFanoutAndCheck does not count the same target twice', withDb(() => {
+  const opts = { threshold: 2, windowSeconds: 30 };
+  recordMentionFanoutAndCheck('g', 'u', ['a'], opts, 1000);
+  const r = recordMentionFanoutAndCheck('g', 'u', ['a'], opts, 1100); // same target again
+  assert.equal(r.triggered, false);
+  assert.equal(r.targetCount, 1);
+}));
+
+test('recordMentionFanoutAndCheck resets the tally once the window elapses', withDb(() => {
+  const opts = { threshold: 2, windowSeconds: 10 };
+  recordMentionFanoutAndCheck('g', 'u', ['a'], opts, 0);
+  const r = recordMentionFanoutAndCheck('g', 'u', ['b'], opts, 20000); // 20s later, outside window
+  assert.equal(r.triggered, false);
+  assert.equal(r.targetCount, 1);
+}));
+
+function makeFanoutMessage({ guildId = '1', authorId = '42', targetIds = ['t1'], bannable = true } = {}) {
+  return {
+    guild: { id: guildId },
+    author: { bot: false, id: authorId, tag: `user#${authorId}`, toString: () => `<@${authorId}>` },
+    member: {
+      permissions: { has: () => false },
+      bannable,
+      ban: async () => {},
+    },
+    content: 'hi',
+    mentions: { users: new Map(targetIds.map((id) => [id, {}])) },
+    channel: { id: 'c1' },
+    delete: async () => {},
+  };
+}
+
+test('checkMessage bans once mention fan-out crosses the threshold', withDb(async () => {
+  db.setSetting('1', 'mention_fanout_enabled', true);
+  db.setSetting('1', 'mention_fanout_threshold', 3);
+  db.setSetting('1', 'mention_fanout_window_seconds', 30);
+  db.setSetting('1', 'mention_fanout_delete_seconds', 3600);
+  let banArgs = null;
+  const member = {
+    permissions: { has: () => false },
+    bannable: true,
+    ban: async (args) => { banArgs = args; },
+  };
+  for (const targetId of ['t1', 't2', 't3']) {
+    await checkMessage({
+      guild: { id: '1' },
+      author: { bot: false, id: '42', tag: 'raider#42', toString: () => '<@42>' },
+      member,
+      content: 'hi',
+      mentions: { users: new Map([[targetId, {}]]) },
+      delete: async () => {},
+    });
+  }
+  assert.ok(banArgs, 'ban() should have been called');
+  assert.equal(banArgs.deleteMessageSeconds, 3600);
+  assert.match(banArgs.reason, /3 distinct members/);
+  const logs = db.getLogs('1');
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].action, 'mention_fanout_ban');
+}));
+
+test('checkMessage does not trigger mention fan-out below the threshold', withDb(async () => {
+  db.setSetting('1', 'mention_fanout_enabled', true);
+  db.setSetting('1', 'mention_fanout_threshold', 5);
+  await checkMessage(makeFanoutMessage({ targetIds: ['t1'] }));
+  await checkMessage(makeFanoutMessage({ targetIds: ['t2'] }));
+  assert.equal(db.getLogs('1').length, 0);
+}));
+
+test('checkMessage flags instead of banning when the bot cannot ban the fan-out member', withDb(async () => {
+  db.setSetting('1', 'mention_fanout_enabled', true);
+  db.setSetting('1', 'mention_fanout_threshold', 2);
+  let banCalled = false;
+  const unbannableMember = {
+    permissions: { has: () => false },
+    bannable: false,
+    ban: async () => { banCalled = true; },
+  };
+  for (const targetId of ['t1', 't2']) {
+    await checkMessage({
+      guild: { id: '1' },
+      author: { bot: false, id: '42', tag: 'raider#42', toString: () => '<@42>' },
+      member: unbannableMember,
+      content: 'hi',
+      mentions: { users: new Map([[targetId, {}]]) },
+      delete: async () => {},
+    });
+  }
+  assert.equal(banCalled, false);
+  const logs = db.getLogs('1');
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].action, 'mention_fanout_flag');
 }));
