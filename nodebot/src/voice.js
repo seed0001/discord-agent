@@ -7,7 +7,7 @@
 // Python bot's split: there is no longer an HTTP hop and no longer a
 // second, separate transcript the model's context doesn't include.
 import { Readable } from 'node:stream';
-import { ChannelType } from 'discord.js';
+import { ChannelType, PermissionsBitField } from 'discord.js';
 import {
   joinVoiceChannel, getVoiceConnection, EndBehaviorType,
   createAudioPlayer, createAudioResource, AudioPlayerStatus,
@@ -712,16 +712,21 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
 
   const guild = channel.guild;
   const owner = isOwner(speakerId);
+  // Lazy import: this file is what companion/session.js imports, so a
+  // static import here would be a load-time cycle.
+  const companionSession = await import('./companion/session.js');
+  // Companion Exclusive Mode: when on, only the primary companion user (and
+  // owner/admins, so moderation still works) gets a spoken reply at all —
+  // checked before any real work happens. See textChat.js's matching gate.
+  const bypassExclusive = owner
+    || Boolean(guild.members.cache.get(speakerId)?.permissions?.has(PermissionsBitField.Flags.Administrator));
+  if (companionSession.blocksReply(guild.id, speakerId, { bypass: bypassExclusive })) return;
   // A fresh wake word or mention (not just continuing an already-open
   // follow-up window) is a deliberate reciprocity signal for the companion
-  // system — see textChat.js's matching @mention hook. Lazy import: this
-  // file is what companion/session.js imports, so a static import here
-  // would be a load-time cycle. No-op for every guild without companion
-  // mode on.
+  // system — see textChat.js's matching @mention hook. No-op for every
+  // guild without companion mode on.
   if (!followUp) {
-    import('./companion/session.js')
-      .then((session) => session.recordDeliberateContact(guild.id, speakerId, 'voice'))
-      .catch((err) => console.error('[voice] companion mention reciprocity failed:', err.message));
+    companionSession.recordDeliberateContact(guild.id, speakerId, 'voice');
   }
   // The name the bot speaks under in the shared conversation buffer. Text
   // chat records its own turns under the live Discord name, so hardcoding

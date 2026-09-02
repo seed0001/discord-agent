@@ -43,6 +43,22 @@ export function isIdle(guildId) {
  * traffic must never call this — see the callers in textChat.js and
  * voice.js, both gated on a REAL mention, never the always-on branch.
  */
+/**
+ * True when Companion Exclusive Mode should suppress an ordinary AI reply
+ * to this speaker — the setting is on, a primary user is actually
+ * configured (an unconfigured gate blocks nobody, same "not yet meaningful"
+ * convention as the scheduler's own guards), this speaker isn't them, and
+ * no bypass applies. Bypass (owner/admin) is the CALLER's decision — this
+ * function only knows guild settings, not Discord permissions.
+ */
+export function blocksReply(guildId, userId, { bypass = false } = {}) {
+  if (bypass) return false;
+  if (!db.getSetting(guildId, 'companion_exclusive_mode')) return false;
+  const primaryUserId = db.getSetting(guildId, 'companion_primary_user_id');
+  if (!primaryUserId) return false;
+  return String(primaryUserId) !== String(userId);
+}
+
 export function recordDeliberateContact(guildId, userId, reason) {
   if (!db.getSetting(guildId, 'companion_enabled')) return;
   const primaryUserId = db.getSetting(guildId, 'companion_primary_user_id');

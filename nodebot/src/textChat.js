@@ -2,6 +2,7 @@
 // formatForPrompt from conversation.js the same way this does — that
 // shared buffer is the actual fix for text and voice not knowing about
 // each other, not anything specific to this file.
+import { PermissionsBitField } from 'discord.js';
 import { chat, OpenRouterError } from './openrouter.js';
 import * as credits from './credits/index.js';
 import * as switching from './backends/switching.js';
@@ -142,19 +143,25 @@ export async function handleMessage(client, message) {
     .map(String).includes(String(message.channel.id));
   const realMention = message.mentions.has(client.user.id);
   const mentioned = realMention || alwaysOn;
+  // Lazy import: companion/session.js pulls in voice.js, which imports this
+  // very file, so a static import here would be a load-time cycle.
+  const companionSession = await import('./companion/session.js');
   if (realMention) {
     // A real @mention is a deliberate reciprocity signal for the companion
     // system — an always-on-channel message reaching the bot is not (the
     // person never chose to address it), so this is gated on realMention
-    // specifically, never on `mentioned`. Lazy import: companion/session.js
-    // pulls in voice.js, which imports this very file, so a static import
-    // here would be a load-time cycle. No-ops for every guild without
+    // specifically, never on `mentioned`. No-ops for every guild without
     // companion mode on.
-    import('./companion/session.js')
-      .then((session) => session.recordDeliberateContact(guildId, message.author.id, 'mention'))
-      .catch((err) => console.error('companion mention reciprocity failed:', err.message));
+    companionSession.recordDeliberateContact(guildId, message.author.id, 'mention');
   }
-  if (!mentioned) {
+  // Companion Exclusive Mode: when on, only the primary companion user (and
+  // owner/admins, so moderation still works) gets a reply at all — everyone
+  // else is treated exactly like an unmentioned ambient message below.
+  const bypassExclusive = owner
+    || Boolean(message.member?.permissions?.has(PermissionsBitField.Flags.Administrator));
+  const blockedByExclusive = mentioned
+    && companionSession.blocksReply(guildId, message.author.id, { bypass: bypassExclusive });
+  if (!mentioned || blockedByExclusive) {
     // Ambient: remember it happened, but don't reply. Same reasoning as
     // the Python bot — a message doesn't have to address the bot to be
     // something the bot should know about later (from voice, or from a

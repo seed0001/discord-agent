@@ -1169,6 +1169,10 @@ async function renderSettings() {
                 "View Channel/Connect/Speak) first."}</span>
             <label class="field"><span class="lbl">Primary Companion User</span>
               <select id="s-companion_primary_user_id">${memberOptions(settings.companion_primary_user_id)}</select></label>
+            <label class="toggle"><input type="checkbox" id="s-companion_exclusive_mode"
+              ${settings.companion_exclusive_mode ? "checked" : ""}> Exclusive mode — only the primary
+              companion user (and owner/admins) get a reply at all, in text or voice. Everyone else's
+              messages are still logged, just never answered.</label>
           </div>
           <div class="card">
             <div class="section-title">Timing</div>
@@ -1331,6 +1335,7 @@ async function renderSettings() {
       companion_enabled: $("#s-companion_enabled").checked,
       companion_room_channel_id: $("#s-companion_room_channel_id").value || null,
       companion_primary_user_id: $("#s-companion_primary_user_id").value || null,
+      companion_exclusive_mode: $("#s-companion_exclusive_mode").checked,
       companion_max_sessions_per_day: parseInt($("#s-companion_max_sessions_per_day").value, 10) || 0,
       companion_min_cooldown_hours: parseInt($("#s-companion_min_cooldown_hours").value, 10) || 0,
       companion_wait_timeout_minutes: Math.max(1, parseInt($("#s-companion_wait_timeout_minutes").value, 10) || 1),

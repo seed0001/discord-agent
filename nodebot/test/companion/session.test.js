@@ -31,6 +31,31 @@ function withDb(fn) {
   };
 }
 
+// -- blocksReply (Companion Exclusive Mode) ---------------------------------
+
+test('blocksReply is false when exclusive mode is off, even with a primary user set', withDb(() => {
+  db.setSetting('g1', 'companion_primary_user_id', 'u1');
+  assert.equal(session.blocksReply('g1', 'someone-else'), false);
+}));
+
+test('blocksReply is false when no primary user is configured, even with exclusive mode on', withDb(() => {
+  db.setSetting('g1', 'companion_exclusive_mode', true);
+  assert.equal(session.blocksReply('g1', 'anyone'), false);
+}));
+
+test('blocksReply blocks everyone except the primary user once exclusive mode is on', withDb(() => {
+  db.setSetting('g1', 'companion_exclusive_mode', true);
+  db.setSetting('g1', 'companion_primary_user_id', 'u1');
+  assert.equal(session.blocksReply('g1', 'u1'), false);
+  assert.equal(session.blocksReply('g1', 'someone-else'), true);
+}));
+
+test('blocksReply never blocks when the caller passes bypass: true', withDb(() => {
+  db.setSetting('g1', 'companion_exclusive_mode', true);
+  db.setSetting('g1', 'companion_primary_user_id', 'u1');
+  assert.equal(session.blocksReply('g1', 'someone-else', { bypass: true }), false);
+}));
+
 test('a fresh guild has no session — status idle, get null', () => {
   session._resetForTests();
   assert.equal(session.status('g-never-seen'), 'idle');

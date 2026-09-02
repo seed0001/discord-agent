@@ -421,6 +421,13 @@ export const DEFAULTS = {
   // The one Discord user id this guild's companion maintains a relationship
   // with. One companion relationship per guild in this version.
   companion_primary_user_id: null,
+  // When true, ordinary AI replies (text and voice — not just the
+  // relationship engine) are restricted to the primary companion user and
+  // owner/admins. Everyone else's messages are still ambient-logged, just
+  // never answered — she's a companion, not also a public chatbot for
+  // whoever else happens to be in the server. Off by default, since it's a
+  // real behavior change to the base bot, not just Companion Mode.
+  companion_exclusive_mode: false,
   companion_max_sessions_per_day: 2,
   companion_min_cooldown_hours: 4,
   companion_wait_timeout_minutes: 5,
