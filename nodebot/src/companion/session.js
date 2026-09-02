@@ -281,6 +281,16 @@ export function handleDirectMessage(client, message) {
   if (message.author.bot) return;
   for (const guild of client.guilds.cache.values()) {
     recordDeliberateContact(guild.id, message.author.id, 'dm');
+    // Not a general DM chat feature (see the doc comment above) — but going
+    // completely silent when someone replies to an invite they were just
+    // sent reads as broken, not as "conversation happens in voice." One
+    // short, fixed pointer back to the room, only while a session is
+    // actually waiting on this exact person.
+    const s = sessions.get(String(guild.id));
+    if (s && s.status === 'waiting' && s.userId === String(message.author.id)) {
+      message.channel.send(`hop into <#${s.roomChannelId}> and I'll be right there — that's where we actually talk.`)
+        .catch((err) => console.error('[COMPANION] DM room-pointer reply failed:', err.message));
+    }
   }
 }
 

@@ -236,7 +236,15 @@ function voiceChannels(guild) {
 /** Empty allowlist = unrestricted (same convention as ai_channels). */
 function isChannelAllowed(channel) {
   const allowlist = db.getSetting(channel.guild.id, 'voice_channel_allowlist') || [];
-  return allowlist.length === 0 || allowlist.includes(channel.id);
+  if (allowlist.length === 0 || allowlist.includes(channel.id)) return true;
+  // The Private Companion Room (companion/scheduler.js) is a separate,
+  // explicit admin choice made through its own dedicated picker (which
+  // already checks it's private and bot-usable) — being selected there IS
+  // the permission decision. Requiring it to ALSO be added to the general
+  // ambient-monitoring allowlist above is a different concern (which
+  // channels get always-listening AI monitoring) and silently blocked every
+  // companion join with reason=not-allowed.
+  return db.getSetting(channel.guild.id, 'companion_room_channel_id') === channel.id;
 }
 
 export function matchesAny(text, words) {

@@ -20,6 +20,22 @@ export function selectIntent(state, threads = [], nowSec = Math.floor(Date.now()
   const { pressures } = state;
   const topThread = threads[0];
 
+  // A genuinely fresh relationship — no completed conversation has ever
+  // happened. Checked before everything else: there can be no real threads
+  // or absence yet, and this deserves an explicit "we've never actually
+  // talked" framing rather than falling through to simple_check_in's
+  // vaguer "still getting to know each other" (which reads as though some
+  // history already exists).
+  if (!state.lastInteractionAt) {
+    return {
+      code: 'first_contact',
+      phrase: "this is the very first time you're reaching out to this person — you have never "
+        + 'talked before, so do not reference any shared history. Introduce yourself honestly: '
+        + "you're new to this, and you're genuinely looking to get to know people and make a real "
+        + 'connection. Ask what they are looking for from you, rather than assuming.',
+    };
+  }
+
   if (topThread && topThread.importance >= HIGH_IMPORTANCE) {
     return {
       code: 'continue_thread',
