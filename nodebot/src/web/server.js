@@ -93,13 +93,37 @@ const CHANNEL_TYPE_NAMES = {
   [ChannelType.GuildStageVoice]: 'stage',
 };
 
-const serializeChannel = (c) => ({
-  id: String(c.id),
-  name: c.name,
-  type: CHANNEL_TYPE_NAMES[c.type] || String(c.type),
-  position: c.position,
-  category: c.parent ? c.parent.name : null,
-});
+const VOICE_CHANNEL_TYPES = new Set([ChannelType.GuildVoice, ChannelType.GuildStageVoice]);
+
+const serializeChannel = (c) => {
+  const base = {
+    id: String(c.id),
+    name: c.name,
+    type: CHANNEL_TYPE_NAMES[c.type] || String(c.type),
+    position: c.position,
+    category: c.parent ? c.parent.name : null,
+  };
+  if (!VOICE_CHANNEL_TYPES.has(c.type)) return base;
+  // Companion Room dropdown support (see Companion settings in app.js):
+  // is_private is true when @everyone can't view/connect — the "exclude
+  // public voice channels" requirement — and bot_can_use is true when the
+  // bot itself has ViewChannel/Connect/Speak there. A channel can be
+  // private from @everyone while still being unusable by the bot if it was
+  // never given those on the same overwrite, so the dropdown needs both.
+  const everyonePerms = c.permissionsFor(c.guild.roles.everyone);
+  const botPerms = c.guild.members.me ? c.permissionsFor(c.guild.members.me) : null;
+  return {
+    ...base,
+    is_private: Boolean(everyonePerms) && (
+      !everyonePerms.has(PermissionsBitField.Flags.ViewChannel)
+      || !everyonePerms.has(PermissionsBitField.Flags.Connect)
+    ),
+    bot_can_use: Boolean(botPerms)
+      && botPerms.has(PermissionsBitField.Flags.ViewChannel)
+      && botPerms.has(PermissionsBitField.Flags.Connect)
+      && botPerms.has(PermissionsBitField.Flags.Speak),
+  };
+};
 
 const serializeRole = (r) => ({
   id: String(r.id),

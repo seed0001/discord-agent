@@ -10,6 +10,9 @@ import * as welcome from './welcome.js';
 import * as memory from './memory.js';
 import * as proactive from './proactive.js';
 import * as calendar from './calendar.js';
+import * as companionSession from './companion/session.js';
+import * as companionScheduler from './companion/scheduler.js';
+import * as companionAutonomous from './companion/autonomous.js';
 import * as logbuffer from './logbuffer.js';
 import { startDashboard, applyPresence } from './web/server.js';
 import * as backendCatalog from './backends/catalog.js';
@@ -55,6 +58,11 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMembers,
+    // Not privileged (unlike the three above) — no Developer Portal change
+    // needed. Without this the gateway never delivers a DM MessageCreate at
+    // all, which both the invite DM and companion/session.js's
+    // handleDirectMessage (reciprocity detection) depend on.
+    GatewayIntentBits.DirectMessages,
   ],
   partials: [Partials.Channel],
 });
@@ -67,6 +75,10 @@ client.once(Events.ClientReady, (c) => {
   proactive.startTicker(c);
   // Calendar/reminder scheduler — polls for due events and posts them.
   calendar.startTicker(c);
+  // Private Companion relationship system — no-op for every guild that
+  // hasn't turned on Companion Mode (see db.DEFAULTS.companion_enabled).
+  companionScheduler.startTicker(c);
+  companionAutonomous.startTicker(c);
   applyPresence(c);
   startDashboard(c);
   // Keep the list of available OpenRouter models fresh, so there is something
@@ -119,6 +131,17 @@ client.on(Events.MessageCreate, async (message) => {
   } catch (err) {
     console.error('proactive observation failed:', err);
   }
+  // Companion reciprocity signal only — DMs aren't otherwise processed at
+  // all (handleMessage above bails on !message.guild), and this stays that
+  // way: it detects that the primary companion user replied/started a DM,
+  // it does not hold a text conversation over DM.
+  if (!message.guild) {
+    try {
+      companionSession.handleDirectMessage(client, message);
+    } catch (err) {
+      console.error('companion DM detection failed:', err);
+    }
+  }
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
@@ -145,6 +168,16 @@ client.on(Events.GuildMemberRemove, async (member) => {
 });
 
 client.on(Events.VoiceStateUpdate, voice.handleVoiceStateUpdate);
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  // Separate listener, own try/catch: detects the primary companion user
+  // joining/leaving the configured Private Companion Room. No-op for every
+  // guild without Companion Mode on (session.js checks first).
+  try {
+    companionSession.handleVoiceStateUpdate(oldState, newState);
+  } catch (err) {
+    console.error('companion voice state handling failed:', err);
+  }
+});
 
 process.on('unhandledRejection', (err) => console.error('unhandled rejection:', err));
 

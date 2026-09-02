@@ -161,6 +161,43 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     last_fired  INTEGER,
     created_at  INTEGER NOT NULL
 );
+-- Private Companion relationship system (companion/*). One row per
+-- (guild, primary companion user) — see companion/state.js for what the
+-- pressures JSON holds and why absence_pressure is NOT a column (it's
+-- derived from last_interaction_at at read time, not stored).
+CREATE TABLE IF NOT EXISTS companion_state (
+    guild_id     TEXT NOT NULL,
+    user_id      TEXT NOT NULL,
+    pressures    TEXT NOT NULL,
+    last_interaction_at INTEGER,
+    last_invite_at      INTEGER,
+    last_invite_was_concern_checkin INTEGER NOT NULL DEFAULT 0,
+    consecutive_ignored INTEGER NOT NULL DEFAULT 0,
+    sessions_today       INTEGER NOT NULL DEFAULT 0,
+    invites_today         INTEGER NOT NULL DEFAULT 0,
+    daily_counters_date   TEXT,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS companion_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    type       TEXT NOT NULL,
+    data       TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS companion_threads (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    summary    TEXT,
+    importance REAL NOT NULL DEFAULT 0.5,
+    status     TEXT NOT NULL DEFAULT 'open',
+    created_at INTEGER NOT NULL,
+    last_referenced_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_warnings_guild_user ON warnings (guild_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_logs_guild ON mod_logs (guild_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_memver ON memory_versions (guild_id, kind, version);
@@ -168,6 +205,8 @@ CREATE INDEX IF NOT EXISTS idx_turns_guild_consolidated ON turns (guild_id, cons
 CREATE INDEX IF NOT EXISTS idx_songs_guild ON songs (guild_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_calendar_fire ON calendar_events (active, next_fire);
 CREATE INDEX IF NOT EXISTS idx_calendar_guild ON calendar_events (guild_id, active, next_fire);
+CREATE INDEX IF NOT EXISTS idx_companion_events_user ON companion_events (guild_id, user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_companion_threads_user ON companion_threads (guild_id, user_id, status);
 `;
 
 export const MEMORY_VERSIONS_KEPT = 10;
@@ -369,6 +408,36 @@ export const DEFAULTS = {
   presence_status: 'online',
   presence_activity_type: 'playing',
   presence_text: '',
+  // Private Companion relationship system (companion/*). Off by default —
+  // this is a standing one-on-one relationship with a single designated
+  // member, not something that should switch on for every server. See
+  // companion/scheduler.js for how the frequency/cooldown/quiet-hours
+  // settings combine with relationship state to decide when to reach out.
+  companion_enabled: false,
+  // A voice channel the dashboard has confirmed is both private (@everyone
+  // cannot view/connect) and usable by the bot (it has ViewChannel/Connect/
+  // Speak there) — see web/server.js's serializeChannel isPrivate/botCanUse.
+  companion_room_channel_id: null,
+  // The one Discord user id this guild's companion maintains a relationship
+  // with. One companion relationship per guild in this version.
+  companion_primary_user_id: null,
+  companion_max_sessions_per_day: 2,
+  companion_min_cooldown_hours: 4,
+  companion_wait_timeout_minutes: 5,
+  companion_session_max_minutes: 15,
+  // "HH:MM" guild-local (calendar_timezone) strings, or null for no quiet
+  // hours. Both must be set for quiet hours to apply.
+  companion_quiet_hours_start: null,
+  companion_quiet_hours_end: null,
+  // Autonomous between-conversation activity, one toggle per category — see
+  // companion/autonomous.js. All off by default: this spends real money
+  // (image/music/video) or bot time (research/coding) without being asked,
+  // so it needs a deliberate opt-in same as media_enabled above.
+  companion_autonomous_research: false,
+  companion_autonomous_coding: false,
+  companion_autonomous_image: false,
+  companion_autonomous_music: false,
+  companion_autonomous_video: false,
 };
 
 let db = null;
@@ -965,4 +1034,105 @@ export function calendarDelete(guildId, id) {
   const result = db.prepare('DELETE FROM calendar_events WHERE guild_id = ? AND id = ?')
     .run(String(guildId), Number(id));
   return result.changes > 0;
+}
+
+// -- companion relationship state --------------------------------------------
+// See companion/state.js for the shape of `pressures` and why
+// absence_pressure is never stored here (derived from lastInteractionAt).
+
+export function getCompanionState(guildId, userId) {
+  const row = db.prepare('SELECT * FROM companion_state WHERE guild_id = ? AND user_id = ?')
+    .get(String(guildId), String(userId));
+  if (!row) return null;
+  return {
+    pressures: JSON.parse(row.pressures),
+    lastInteractionAt: row.last_interaction_at,
+    lastInviteAt: row.last_invite_at,
+    lastInviteWasConcernCheckin: Boolean(row.last_invite_was_concern_checkin),
+    consecutiveIgnored: row.consecutive_ignored,
+    sessionsToday: row.sessions_today,
+    invitesToday: row.invites_today,
+    dailyCountersDate: row.daily_counters_date,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Full upsert. companion/state.js always recomputes the whole state object
+ *  together (buckets are not independent — see the flow/decay math), so this
+ *  replaces the row rather than patching individual columns. */
+export function saveCompanionState(guildId, userId, state) {
+  db.prepare(
+    'INSERT INTO companion_state (guild_id, user_id, pressures, last_interaction_at, last_invite_at, '
+    + 'last_invite_was_concern_checkin, consecutive_ignored, sessions_today, invites_today, '
+    + 'daily_counters_date, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) '
+    + 'ON CONFLICT (guild_id, user_id) DO UPDATE SET '
+    + 'pressures = excluded.pressures, last_interaction_at = excluded.last_interaction_at, '
+    + 'last_invite_at = excluded.last_invite_at, '
+    + 'last_invite_was_concern_checkin = excluded.last_invite_was_concern_checkin, '
+    + 'consecutive_ignored = excluded.consecutive_ignored, sessions_today = excluded.sessions_today, '
+    + 'invites_today = excluded.invites_today, daily_counters_date = excluded.daily_counters_date, '
+    + 'updated_at = excluded.updated_at',
+  ).run(
+    String(guildId), String(userId), JSON.stringify(state.pressures),
+    state.lastInteractionAt ?? null, state.lastInviteAt ?? null,
+    state.lastInviteWasConcernCheckin ? 1 : 0, state.consecutiveIgnored ?? 0,
+    state.sessionsToday ?? 0, state.invitesToday ?? 0, state.dailyCountersDate ?? null, now(),
+  );
+}
+
+// -- companion event log ------------------------------------------------------
+// Structured, compact rows — never raw conversation text. See the spec's
+// event list in companion/events.js for the `type` vocabulary.
+
+export function addCompanionEvent(guildId, userId, type, data = null) {
+  const result = db.prepare(
+    'INSERT INTO companion_events (guild_id, user_id, type, data, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(String(guildId), String(userId), type, data === null ? null : JSON.stringify(data), now());
+  return Number(result.lastInsertRowid);
+}
+
+/** Most recent events first. */
+export function listCompanionEvents(guildId, userId, { limit = 50 } = {}) {
+  return db.prepare(
+    'SELECT id, type, data, created_at FROM companion_events '
+    + 'WHERE guild_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT ?',
+  ).all(String(guildId), String(userId), limit)
+    .map((r) => ({ ...r, data: r.data === null ? null : JSON.parse(r.data) }));
+}
+
+// -- companion unresolved threads ---------------------------------------------
+
+export function addCompanionThread(guildId, userId, { title, summary = null, importance = 0.5 }) {
+  const ts = now();
+  const result = db.prepare(
+    'INSERT INTO companion_threads (guild_id, user_id, title, summary, importance, status, '
+    + 'created_at, last_referenced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(String(guildId), String(userId), title, summary, importance, 'open', ts, ts);
+  return Number(result.lastInsertRowid);
+}
+
+/** Open threads for a member, most important first — used to build the
+ *  context packet's OPEN line and to drive intent selection. */
+export function listCompanionThreads(guildId, userId, { status = 'open', limit = 8 } = {}) {
+  return db.prepare(
+    'SELECT * FROM companion_threads WHERE guild_id = ? AND user_id = ? AND status = ? '
+    + 'ORDER BY importance DESC, last_referenced_at DESC LIMIT ?',
+  ).all(String(guildId), String(userId), status, limit);
+}
+
+export function touchCompanionThread(id, { summary, importance } = {}) {
+  const sets = ['last_referenced_at = ?'];
+  const params = [now()];
+  if (summary !== undefined) { sets.push('summary = ?'); params.push(summary); }
+  if (importance !== undefined) { sets.push('importance = ?'); params.push(importance); }
+  params.push(Number(id));
+  db.prepare(`UPDATE companion_threads SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+}
+
+export function resolveCompanionThread(id) {
+  db.prepare("UPDATE companion_threads SET status = 'resolved' WHERE id = ?").run(Number(id));
+}
+
+export function archiveCompanionThread(id) {
+  db.prepare("UPDATE companion_threads SET status = 'archived' WHERE id = ?").run(Number(id));
 }

@@ -140,7 +140,20 @@ export async function handleMessage(client, message) {
   // there he answers everything, no @mention needed.
   const alwaysOn = (db.getSetting(guildId, 'ai_channels') || [])
     .map(String).includes(String(message.channel.id));
-  const mentioned = message.mentions.has(client.user.id) || alwaysOn;
+  const realMention = message.mentions.has(client.user.id);
+  const mentioned = realMention || alwaysOn;
+  if (realMention) {
+    // A real @mention is a deliberate reciprocity signal for the companion
+    // system — an always-on-channel message reaching the bot is not (the
+    // person never chose to address it), so this is gated on realMention
+    // specifically, never on `mentioned`. Lazy import: companion/session.js
+    // pulls in voice.js, which imports this very file, so a static import
+    // here would be a load-time cycle. No-ops for every guild without
+    // companion mode on.
+    import('./companion/session.js')
+      .then((session) => session.recordDeliberateContact(guildId, message.author.id, 'mention'))
+      .catch((err) => console.error('companion mention reciprocity failed:', err.message));
+  }
   if (!mentioned) {
     // Ambient: remember it happened, but don't reply. Same reasoning as
     // the Python bot — a message doesn't have to address the bot to be

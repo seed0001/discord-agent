@@ -785,7 +785,7 @@ function showSettingsPanel(id) {
 }
 
 async function renderSettings() {
-  const [settings, channels, roles, me, sounds] = await Promise.all([
+  const [settings, channels, roles, me, sounds, memberPage] = await Promise.all([
     api(`/guilds/${state.guildId}/settings`),
     api(`/guilds/${state.guildId}/channels`),
     api(`/guilds/${state.guildId}/roles`),
@@ -793,9 +793,18 @@ async function renderSettings() {
     // Never fatal: a guild with no soundboard, or a bot without the
     // permission to read it, still gets a working settings page.
     api(`/guilds/${state.guildId}/soundboard`).catch(() => []),
+    // Powers the Primary Companion User dropdown. Capped server-side at 100 —
+    // fine for the small/personal servers this feature targets; a guild past
+    // that would need to type the id directly (the "Other" text entry a
+    // select allows) until this grows a real search field.
+    api(`/guilds/${state.guildId}/members?limit=100`).catch(() => ({ members: [] })),
   ]);
   const textChannels = channels.filter((c) => c.type === "text");
   const voiceChannelList = channels.filter((c) => c.type === "voice");
+  // Companion Room dropdown: voice channels @everyone can't view/connect to
+  // AND the bot itself can actually use (see server.js's serializeChannel).
+  const privateVoiceChannels = voiceChannelList.filter((c) => c.is_private && c.bot_can_use);
+  const members = memberPage.members || [];
   // Bot/integration-managed roles can't be handed out to people, so they're
   // no use as a dashboard-access group.
   const allRoles = roles.filter((r) => !r.managed);
@@ -805,6 +814,12 @@ async function renderSettings() {
   const roleOptions = (selected) =>
     `<option value="">— none —</option>` + roles.filter((r) => !r.managed).map((r) =>
       `<option value="${r.id}" ${String(selected) === r.id ? "selected" : ""}>${esc(r.name)}</option>`).join("");
+  const companionRoomOptions = (selected) =>
+    `<option value="">— none —</option>` + privateVoiceChannels.map((c) =>
+      `<option value="${c.id}" ${String(selected) === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("");
+  const memberOptions = (selected) =>
+    `<option value="">— none —</option>` + members.map((m) =>
+      `<option value="${m.id}" ${String(selected) === m.id ? "selected" : ""}>${esc(m.display_name)}</option>`).join("");
 
   const settingsTabs = [
     { id: "identity", label: "Identity" },
@@ -819,6 +834,7 @@ async function renderSettings() {
     { id: "speech", label: "Speech (TTS)" },
     { id: "proactive", label: "Proactive" },
     { id: "deescalation", label: "De-escalation" },
+    { id: "companion", label: "Companion" },
     { id: "memory", label: "Memory" },
     { id: "logging", label: "Logging" },
     { id: "presence", label: "Presence" },
@@ -1137,6 +1153,62 @@ async function renderSettings() {
           </div>
         </section>
 
+        <section class="settings-panel ${activeTab === "companion" ? "active" : ""}" data-panel="companion">
+          <div class="section-title">Companion</div>
+          <div class="card">
+            <label class="toggle"><input type="checkbox" id="s-companion_enabled"
+              ${settings.companion_enabled ? "checked" : ""}> Enable Companion Mode — a standing
+              one-on-one relationship with one member, who gets occasionally invited into a
+              private voice conversation</label>
+            <label class="field"><span class="lbl">Private Companion Room</span>
+              <select id="s-companion_room_channel_id">${companionRoomOptions(settings.companion_room_channel_id)}</select></label>
+            <span class="muted">Only voice channels @everyone can't view/connect to, that the bot
+              itself can also use, show up here.
+              ${privateVoiceChannels.length ? "" : "None found — create a private voice channel " +
+                "(deny @everyone View Channel/Connect, and make sure the bot's own role keeps " +
+                "View Channel/Connect/Speak) first."}</span>
+            <label class="field"><span class="lbl">Primary Companion User</span>
+              <select id="s-companion_primary_user_id">${memberOptions(settings.companion_primary_user_id)}</select></label>
+          </div>
+          <div class="card">
+            <div class="section-title">Timing</div>
+            <label class="field"><span class="lbl">Max proactive sessions per day</span>
+              <input type="number" min="0" id="s-companion_max_sessions_per_day"
+                value="${settings.companion_max_sessions_per_day}"></label>
+            <label class="field"><span class="lbl">Minimum cooldown between invitations (hours)</span>
+              <input type="number" min="0" id="s-companion_min_cooldown_hours"
+                value="${settings.companion_min_cooldown_hours}"></label>
+            <label class="field"><span class="lbl">Wait time in the room before leaving (minutes)</span>
+              <input type="number" min="1" id="s-companion_wait_timeout_minutes"
+                value="${settings.companion_wait_timeout_minutes}"></label>
+            <label class="field"><span class="lbl">Max session length (minutes)</span>
+              <input type="number" min="1" id="s-companion_session_max_minutes"
+                value="${settings.companion_session_max_minutes}"></label>
+            <label class="field"><span class="lbl">Quiet hours start (HH:MM, server timezone, blank = none)</span>
+              <input id="s-companion_quiet_hours_start" placeholder="23:00"
+                value="${esc(settings.companion_quiet_hours_start || "")}"></label>
+            <label class="field"><span class="lbl">Quiet hours end (HH:MM)</span>
+              <input id="s-companion_quiet_hours_end" placeholder="08:00"
+                value="${esc(settings.companion_quiet_hours_end || "")}"></label>
+          </div>
+          <div class="card">
+            <div class="section-title">Autonomous activity between conversations</div>
+            <label class="toggle"><input type="checkbox" id="s-companion_autonomous_research"
+              ${settings.companion_autonomous_research ? "checked" : ""}> Research</label>
+            <label class="toggle"><input type="checkbox" id="s-companion_autonomous_coding"
+              ${settings.companion_autonomous_coding ? "checked" : ""}> Coding</label>
+            <label class="toggle"><input type="checkbox" id="s-companion_autonomous_image"
+              ${settings.companion_autonomous_image ? "checked" : ""}> Image generation</label>
+            <label class="toggle"><input type="checkbox" id="s-companion_autonomous_music"
+              ${settings.companion_autonomous_music ? "checked" : ""}> Music generation</label>
+            <label class="toggle"><input type="checkbox" id="s-companion_autonomous_video"
+              ${settings.companion_autonomous_video ? "checked" : ""}> Video generation</label>
+            <span class="muted">Image/music/video generation are recognized here but do not
+              actually run yet — logged only. All off by default; each spends real money once
+              they do.</span>
+          </div>
+        </section>
+
         <section class="settings-panel ${activeTab === "memory" ? "active" : ""}" data-panel="memory">
           <div class="section-title">Memory</div>
           <div class="card">
@@ -1256,6 +1328,20 @@ async function renderSettings() {
       voice_cue_declined: readCue("declined"),
       voice_cue_stopped_listening: readCue("stopped_listening"),
       log_channel: $("#s-log_channel").value || null,
+      companion_enabled: $("#s-companion_enabled").checked,
+      companion_room_channel_id: $("#s-companion_room_channel_id").value || null,
+      companion_primary_user_id: $("#s-companion_primary_user_id").value || null,
+      companion_max_sessions_per_day: parseInt($("#s-companion_max_sessions_per_day").value, 10) || 0,
+      companion_min_cooldown_hours: parseInt($("#s-companion_min_cooldown_hours").value, 10) || 0,
+      companion_wait_timeout_minutes: Math.max(1, parseInt($("#s-companion_wait_timeout_minutes").value, 10) || 1),
+      companion_session_max_minutes: Math.max(1, parseInt($("#s-companion_session_max_minutes").value, 10) || 1),
+      companion_quiet_hours_start: $("#s-companion_quiet_hours_start").value.trim() || null,
+      companion_quiet_hours_end: $("#s-companion_quiet_hours_end").value.trim() || null,
+      companion_autonomous_research: $("#s-companion_autonomous_research").checked,
+      companion_autonomous_coding: $("#s-companion_autonomous_coding").checked,
+      companion_autonomous_image: $("#s-companion_autonomous_image").checked,
+      companion_autonomous_music: $("#s-companion_autonomous_music").checked,
+      companion_autonomous_video: $("#s-companion_autonomous_video").checked,
     };
     await api(`/guilds/${state.guildId}/settings`, { method: "PUT", body });
     toast("Settings saved");

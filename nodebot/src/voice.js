@@ -20,7 +20,7 @@ import { chat, OpenRouterError } from './openrouter.js';
 import { InsufficientCreditsError } from './credits/index.js';
 import * as switching from './backends/switching.js';
 import { recordTurn, formatForPrompt } from './conversation.js';
-import { VOICE_PROMPT, VOICE_OWNER_ACTION_NOTE, VOICE_PASS } from './persona.js';
+import { VOICE_PROMPT, VOICE_OWNER_ACTION_NOTE, VOICE_PASS, COMPANION_STANCE_NOTE } from './persona.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 import { normalizePhrase } from './phrases.js';
 import { botName, voicePhrases } from './botName.js';
@@ -154,6 +154,21 @@ const followUpEpoch = new Map();     // channelId -> int
 // explicit close both replace/clear this before it fires, so it only ever
 // goes off once per window.
 const followUpTimer = new Map();     // channelId -> Timeout
+// Companion voice sessions (companion/session.js) inject a compact
+// relationship context packet here for the duration of one session; empty
+// for every guild that isn't mid companion-session, so this is a no-op for
+// everyone else. See setCompanionContext() below and its read site in
+// respond().
+const companionContext = new Map(); // guildId -> context packet text
+
+/** Give the next voice turn(s) in this guild the companion relationship
+ *  context packet (REL/PATTERN/OPEN/STANCE/INTENT), or clear it with
+ *  `text` falsy. Read by respond() when assembling the system prompt. */
+export function setCompanionContext(guildId, text) {
+  const key = String(guildId);
+  if (text) companionContext.set(key, text);
+  else companionContext.delete(key);
+}
 
 /** Is the follow-up window open on this channel — i.e. can someone speak to
  * Max right now without saying the wake word? */
@@ -264,6 +279,14 @@ async function joinChannel(channel) {
       ]);
     } catch {
       connection.destroy();
+      // A companion voice session ends itself on a real connection loss
+      // rather than being left "conversing" forever. Lazy import avoids a
+      // load-time cycle (companion/session.js imports voice.js).
+      if (companionContext.has(String(channel.guild.id))) {
+        import('./companion/session.js')
+          .then((session) => session.handleConnectionLost(channel.guild))
+          .catch((err) => console.error('[voice] companion connection-lost hook failed:', err.message));
+      }
       setTimeout(() => rebalance(channel.guild).catch(() => {}), 2_000);
     }
   });
@@ -617,7 +640,7 @@ function scheduleResponse(channel, name, userId, opts) {
  * Timed off the end of playback, not the end of generation: speakInVoice()
  * returns the moment playback starts, so arming there would spend most of a
  * 25-second window on a 20-second answer and leave five seconds to reply. */
-async function armFollowUp(channel, spoke, epoch) {
+export async function armFollowUp(channel, spoke, epoch) {
   const guild = channel.guild;
   if (!db.getSetting(guild.id, 'voice_followup_enabled')) return;
   const seconds = Number(db.getSetting(guild.id, 'voice_followup_window_sec')) || 0;
@@ -647,8 +670,26 @@ async function armFollowUp(channel, spoke, epoch) {
     // Only announce if nothing re-armed or force-closed the window since —
     // both of those already replaced/cleared this timer, but the check is a
     // cheap backstop against a race between clearTimeout and the callback.
-    if (!isFollowUpOpen(channel.id)) announceStoppedListening(guild, channel);
+    if (!isFollowUpOpen(channel.id)) {
+      announceStoppedListening(guild, channel);
+      // The follow-up window closing on its own IS the "silence" end trigger
+      // for a companion voice session — session.js listens here rather than
+      // running its own silence timer. No-op for every guild not mid a
+      // companion session (session.js checks before acting).
+      if (companionContext.has(String(guild.id))) {
+        import('./companion/session.js')
+          .then((session) => session.handleSilenceTimeout(guild, channel))
+          .catch((err) => console.error('[voice] companion silence hook failed:', err.message));
+      }
+    }
   }, seconds * 1000));
+}
+
+/** The current follow-up epoch for a channel — see followUpEpoch above.
+ *  Exposed so companion/session.js can arm the initial follow-up window
+ *  right after speaking its opening line without racing a stale snapshot. */
+export function currentFollowUpEpoch(channelId) {
+  return followUpEpoch.get(channelId) || 0;
 }
 
 async function respond(channel, speakerName, speakerId, state, { followUp = false, mention = null } = {}) {
@@ -663,6 +704,17 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
 
   const guild = channel.guild;
   const owner = isOwner(speakerId);
+  // A fresh wake word or mention (not just continuing an already-open
+  // follow-up window) is a deliberate reciprocity signal for the companion
+  // system — see textChat.js's matching @mention hook. Lazy import: this
+  // file is what companion/session.js imports, so a static import here
+  // would be a load-time cycle. No-op for every guild without companion
+  // mode on.
+  if (!followUp) {
+    import('./companion/session.js')
+      .then((session) => session.recordDeliberateContact(guild.id, speakerId, 'voice'))
+      .catch((err) => console.error('[voice] companion mention reciprocity failed:', err.message));
+  }
   // The name the bot speaks under in the shared conversation buffer. Text
   // chat records its own turns under the live Discord name, so hardcoding
   // anything here would put one bot in the transcript under two names.
@@ -697,6 +749,10 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
     channel: channel.name, speaker: speakerName, followUp, mention,
   });
   if (owner) systemPrompt += VOICE_OWNER_ACTION_NOTE;
+  // Companion relationship context, only present for the duration of one
+  // companion/session.js voice session — see setCompanionContext() above.
+  const companionNote = companionContext.get(String(guild.id));
+  if (companionNote) systemPrompt += `\n\n${COMPANION_STANCE_NOTE}\n\n${companionNote}`;
   // What's in reach to play, so he can offer a track without calling
   // list_songs first — only when this speaker can actually work the music.
   if (canMakeMusic) {
@@ -820,7 +876,15 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
     return;
   }
 
-  const display = tts.stripVoiceTags(reply) || reply;
+  // A companion voice session can end itself here: the persona note
+  // (COMPANION_STANCE_NOTE, only present when companionNote was appended
+  // above) tells the model to end a reply with this marker when it wants to
+  // wrap up. It's one of several independent session-end triggers (see
+  // companion/session.js) — a deterministic code decision reacting to a
+  // small signal, never a dependency the whole feature rests on. Stripped
+  // before anything gets posted or spoken either way.
+  const companionEnded = Boolean(companionNote) && /\[\[end_session\]\]/i.test(reply);
+  const display = (tts.stripVoiceTags(reply) || reply).replace(/\[\[end_session\]\]/gi, '').trim();
   // "Coming in now." Played before the text post and the TTS, so the cue
   // leads the reply rather than trailing it. playCue resolves once the tone
   // has finished, which is also what keeps it from colliding with speech.
@@ -838,7 +902,16 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
     console.warn('[voice] posting reply failed:', err.message);
   }
   const spoke = await speakInVoice(guild, display);
-  await armFollowUp(channel, spoke, epoch);
+  if (companionEnded) {
+    try {
+      const session = await import('./companion/session.js');
+      await session.handleModelEnded(guild);
+    } catch (err) {
+      console.error('[voice] companion session-end hook failed:', err.message);
+    }
+  } else {
+    await armFollowUp(channel, spoke, epoch);
+  }
 }
 
 /** Did the model decline to answer? Tolerant of the trailing punctuation and
