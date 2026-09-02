@@ -16,6 +16,7 @@ import * as voice from '../voice.js';
 import * as stateMod from './state.js';
 import * as events from './events.js';
 import * as threadsMod from './threads.js';
+import * as dmChat from './dm.js';
 
 const sessions = new Map(); // guildId -> session record (see beginWaiting)
 
@@ -297,16 +298,16 @@ export function handleDirectMessage(client, message) {
   if (message.author.bot) return;
   for (const guild of client.guilds.cache.values()) {
     recordDeliberateContact(guild.id, message.author.id, 'dm');
-    // Not a general DM chat feature (see the doc comment above) — but going
-    // completely silent when someone replies to an invite they were just
-    // sent reads as broken, not as "conversation happens in voice." One
-    // short, fixed pointer back to the room, only while a session is
-    // actually waiting on this exact person.
-    const s = sessions.get(String(guild.id));
-    if (s && s.status === 'waiting' && s.userId === String(message.author.id)) {
-      message.channel.send(`hop into <#${s.roomChannelId}> and I'll be right there — that's where we actually talk.`)
-        .catch((err) => console.error('[COMPANION] DM room-pointer reply failed:', err.message));
-    }
+    if (!db.getSetting(guild.id, 'companion_enabled')) continue;
+    const primaryUserId = db.getSetting(guild.id, 'companion_primary_user_id');
+    if (!primaryUserId || String(primaryUserId) !== String(message.author.id)) continue;
+    // A real reply — see dm.js's doc comment for why this is scoped to only
+    // the primary companion user rather than "the bot does DMs now." Passed
+    // the raw session record rather than the module, since dm.js
+    // deliberately does not import this file back (that's the actual cycle
+    // risk — this file already imports voice.js).
+    dmChat.respond(client, guild, message.author, message, sessions.get(String(guild.id)))
+      .catch((err) => console.error('[COMPANION] DM chat reply failed:', err.message));
   }
 }
 
