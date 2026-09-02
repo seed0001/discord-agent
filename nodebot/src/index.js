@@ -68,8 +68,26 @@ const client = new Client({
 });
 client.commands = await loadCommands();
 
+// Discord.js's guild member cache only ever holds who it has incidentally
+// seen (message authors, join/leave events) unless something explicitly
+// asks for the rest — GUILD_CREATE does NOT include the full member list.
+// A long-running bot slowly fills this in through ordinary activity, which
+// masks the gap; a freshly (re)joined guild starts with essentially just
+// the bot itself cached, which silently emptied the dashboard's member
+// list (and with it, e.g. the Companion tab's Primary Companion User
+// dropdown). GuildMembers is already a granted privileged intent, so this
+// is just actually using it.
+async function primeMemberCache(guild) {
+  try {
+    await guild.members.fetch();
+  } catch (err) {
+    console.warn(`[members] full fetch failed for guild ${guild.id}:`, err.message);
+  }
+}
+
 client.once(Events.ClientReady, (c) => {
   console.log(`Logged in as ${c.user.tag} (${c.user.id}) — ${c.guilds.cache.size} guild(s)`);
+  for (const guild of c.guilds.cache.values()) primeMemberCache(guild);
   voice.init(c);
   // Pressure decay/flow runs on its own clock, independent of message traffic.
   proactive.startTicker(c);
@@ -143,6 +161,11 @@ client.on(Events.MessageCreate, async (message) => {
     }
   }
 });
+
+// Fires when the bot is added (or re-added) to a guild while already
+// running — the ClientReady sweep above only covers guilds it was already
+// in at startup. Same member-cache gap, same fix.
+client.on(Events.GuildCreate, (guild) => primeMemberCache(guild));
 
 client.on(Events.GuildMemberAdd, async (member) => {
   try {
