@@ -38,6 +38,10 @@ import * as logbuffer from '../logbuffer.js';
 import * as voice from '../voice.js';
 import * as memory from '../memory.js';
 import * as db from '../db.js';
+import * as companionState from '../companion/state.js';
+import * as companionEvents from '../companion/events.js';
+import * as companionThreads from '../companion/threads.js';
+import * as companionSession from '../companion/session.js';
 import { ttsSettingsMeta } from '../ttsConfig.js';
 
 const OPTIONAL_STRING_SETTINGS = new Set([
@@ -678,6 +682,28 @@ function buildRoutes(client) {
         durable_version: durable.version,
         working: working.content,
         working_version: working.version,
+      };
+    }, { level: 'admin' }],
+
+    // Companion debug view — the slash command (/companion status/log)
+    // covers this in Discord, but that needs a live guild member to run it.
+    // Same data, read-only, admin-gated like everything else here.
+    ['GET', '/api/guilds/:guildId/companion/debug', async ({ params }) => {
+      const g = getGuild(client, params.guildId);
+      const primaryUserId = db.getSetting(g.id, 'companion_primary_user_id');
+      if (!primaryUserId) return { configured: false };
+      const state = companionState.load(g.id, primaryUserId);
+      const drive = companionState.computeReachOutDrive(state);
+      return {
+        configured: true,
+        primaryUserId,
+        state,
+        absence: companionState.derivedAbsence(state),
+        reachOutDrive: drive,
+        session: companionSession.get(g.id),
+        pattern: companionEvents.summarizePattern(g.id, primaryUserId),
+        threads: companionThreads.openThreads(g.id, primaryUserId),
+        recentEvents: companionEvents.recent(g.id, primaryUserId, 30),
       };
     }, { level: 'admin' }],
 

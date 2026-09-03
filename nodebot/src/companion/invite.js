@@ -60,6 +60,7 @@ export async function send(client, guild, member, packetText) {
     if (audio) payload.files = [{ attachment: audio, name: 'invite.mp3' }];
     await member.send(payload);
   } catch (err) {
+    console.error(`[COMPANION] invite DM to ${member.id} failed:`, err.message);
     events.record(guild.id, member.id, 'dm_delivery_failed', { reason: err.message });
     return { ok: false };
   }
