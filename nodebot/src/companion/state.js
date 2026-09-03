@@ -185,6 +185,7 @@ function defaultState(nowSec) {
     lastInteractionAt: null,
     lastInviteAt: null,
     lastInviteWasConcernCheckin: false,
+    lastInviteText: null,
     consecutiveIgnored: 0,
     sessionsToday: 0,
     invitesToday: 0,

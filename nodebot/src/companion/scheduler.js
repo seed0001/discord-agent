@@ -110,7 +110,7 @@ async function evaluateGuild(client, guild, opts = {}) {
     pattern, threads: openThreads, intentPhrase: intent.phrase, agendaNote: agendaItem?.note,
   });
 
-  const result = await invite.send(client, guild, member, packet.text);
+  const result = await invite.send(client, guild, member, packet.text, state.lastInviteText);
   if (!result.ok) return; // dm_delivery_failed already recorded by invite.js — nothing else changes
   // Consumed the moment it's actually delivered — same "never replay"
   // principle as the DM/voice-join text itself, generalized to agenda items.
@@ -124,6 +124,7 @@ async function evaluateGuild(client, guild, opts = {}) {
     invitesToday: state.invitesToday + 1,
     lastInviteAt: now,
     lastInviteWasConcernCheckin: driveResult.isConcernCheckin,
+    lastInviteText: result.dm,
   };
   stateMod.save(guild.id, primaryUserId, updated, now);
 
