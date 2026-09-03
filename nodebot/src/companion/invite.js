@@ -8,6 +8,12 @@ import * as tts from '../tts.js';
 import { chat } from '../openrouter.js';
 import { botName } from '../botName.js';
 import * as events from './events.js';
+import * as memory from '../memory.js';
+import { formatForPrompt } from '../conversation.js';
+import { buildSystemPrompt } from '../systemPrompt.js';
+import { isOwner } from '../utils.js';
+
+const INVITE_HISTORY_TURNS = 40;
 
 function parseInviteReply(text) {
   const dmMatch = /^DM:\s*(.+)$/im.exec(text);
@@ -32,20 +38,27 @@ const FALLBACK_DM = "hey — got a minute to hop into voice? I'd like to actuall
  *  garbage or empty reply is harmless. This is a real message a person
  *  reads; it gets the same model as an ordinary conversational reply.
  *  Already gates/meters credits internally (chat()). */
-async function draftInvite(client, guild, packetText) {
-  const persona = db.getSetting(guild.id, 'ai_system_prompt');
+async function draftInvite(client, guild, member, packetText) {
   const name = botName(client, guild.id);
   const model = db.getSetting(guild.id, 'ai_model');
-  const prompt = [{
-    role: 'system',
-    content: `${persona}\n\nYou are ${name}. You are about to reach out to a member you have an ongoing `
-      + 'relationship with, inviting them into a private voice conversation. This is not a normal chat '
-      + `reply — write ONLY the invitation, nothing else.\n\n${packetText}\n\n`
-      + 'Write two short lines, exactly in this format:\n'
-      + 'DM: <one or two sentences, natural text-message tone, inviting them to hop into voice with you>\n'
-      + 'SPOKEN: <a short spoken version of the same invitation, natural to say out loud>\n'
-      + 'No markdown, nothing before or after those two lines.',
-  }];
+  const owner = isOwner(member.id);
+  const transcript = formatForPrompt(guild.id, INVITE_HISTORY_TURNS);
+
+  const systemPrompt = buildSystemPrompt({
+    client, guild, owner, memory: memory.getContext(guild.id, member.id),
+  }) + `\n\nYou are ${name}. You are about to reach out to a member you have an ongoing `
+    + 'relationship with, inviting them into a private voice conversation. This is not a normal chat '
+    + `reply — write ONLY the invitation, nothing else. Base it on what you actually remember and on `
+    + `the recent conversation below — do not act like you are meeting them for the first time.\n\n${packetText}\n\n`
+    + 'Write two short lines, exactly in this format:\n'
+    + 'DM: <one or two sentences, natural text-message tone, inviting them to hop into voice with you>\n'
+    + 'SPOKEN: <a short spoken version of the same invitation, natural to say out loud>\n'
+    + 'No markdown, nothing before or after those two lines.';
+
+  const prompt = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: transcript ? `[recent conversation]\n${transcript}` : '[no recent conversation on record]' },
+  ];
   const reply = await chat(prompt, { guildId: guild.id, model, maxTokens: 200 });
   const { dm, spoken } = parseInviteReply(reply || '');
   if (dm) return { dm, spoken: spoken || dm };
@@ -62,7 +75,7 @@ async function draftInvite(client, guild, packetText) {
  * offered to the user — and the caller must not proceed to joining the room.
  */
 export async function send(client, guild, member, packetText) {
-  const { dm, spoken } = await draftInvite(client, guild, packetText);
+  const { dm, spoken } = await draftInvite(client, guild, member, packetText);
 
   let audio = null;
   try {
