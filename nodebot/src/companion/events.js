@@ -22,6 +22,13 @@ export function recent(guildId, userId, limit = 50) {
   return db.listCompanionEvents(guildId, userId, { limit });
 }
 
+/** Drops old rows past the retention window — see db.js's
+ *  pruneCompanionEvents for why this exists at all: unlike every other store
+ *  in this system, this table had no consolidation/retention of its own. */
+export function prune(guildId, userId) {
+  db.pruneCompanionEvents(guildId, userId);
+}
+
 /**
  * One templated line for the context packet's PATTERN field, derived from
  * recent invite outcomes — never free text, never the raw event log.

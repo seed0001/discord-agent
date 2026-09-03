@@ -1118,6 +1118,20 @@ export function listCompanionEvents(guildId, userId, { limit = 50 } = {}) {
     .map((r) => ({ ...r, data: r.data === null ? null : JSON.parse(r.data) }));
 }
 
+/** Unlike memory_versions (pruned to MEMORY_VERSIONS_KEPT on every write) or
+ *  companion_threads (archiveStale), this table had no retention at all —
+ *  it just grew forever. Every reader already caps itself to a recent window
+ *  (summarizePattern reads 30, recent() defaults to 50) so nothing breaks by
+ *  dropping old rows; `keepMin` is a floor so a quiet user's whole history
+ *  never gets wiped just because it's all "old". */
+export function pruneCompanionEvents(guildId, userId, { keepMin = 200, olderThanDays = 90 } = {}) {
+  const cutoff = now() - olderThanDays * 86400;
+  db.prepare(
+    'DELETE FROM companion_events WHERE guild_id = ? AND user_id = ? AND created_at < ? AND id NOT IN ('
+    + 'SELECT id FROM companion_events WHERE guild_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT ?)',
+  ).run(String(guildId), String(userId), cutoff, String(guildId), String(userId), keepMin);
+}
+
 // -- companion unresolved threads ---------------------------------------------
 
 export function addCompanionThread(guildId, userId, { title, summary = null, importance = 0.5 }) {

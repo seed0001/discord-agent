@@ -48,6 +48,15 @@ async function tickGuild(client, guild) {
   const userId = db.getSetting(guild.id, 'companion_primary_user_id');
   if (!userId) return;
 
+  // Housekeeping — runs every hourly tick regardless of the lottery below.
+  // Neither of these self-prunes on write the way memory_versions does:
+  // companion_threads' own archiveStale() existed but was never called from
+  // anywhere, and companion_events had no retention at all. Left unwired,
+  // both just grow forever — cheap, no LLM call, so no reason to gate this
+  // behind RUN_CHANCE the way the creative categories are.
+  threadsMod.archiveStale(guild.id, userId);
+  events.prune(guild.id, userId);
+
   const categories = enabledCategories(guild.id);
   if (!categories.length || Math.random() > RUN_CHANCE) {
     console.log(`[COMPANION] autonomous: nothing this round guild=${guild.id}`);
