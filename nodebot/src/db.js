@@ -198,6 +198,16 @@ CREATE TABLE IF NOT EXISTS companion_threads (
     created_at INTEGER NOT NULL,
     last_referenced_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS companion_agenda (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    note       TEXT NOT NULL,
+    source     TEXT,
+    status     TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER NOT NULL,
+    used_at    INTEGER
+);
 CREATE INDEX IF NOT EXISTS idx_warnings_guild_user ON warnings (guild_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_logs_guild ON mod_logs (guild_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_memver ON memory_versions (guild_id, kind, version);
@@ -207,6 +217,7 @@ CREATE INDEX IF NOT EXISTS idx_calendar_fire ON calendar_events (active, next_fi
 CREATE INDEX IF NOT EXISTS idx_calendar_guild ON calendar_events (guild_id, active, next_fire);
 CREATE INDEX IF NOT EXISTS idx_companion_events_user ON companion_events (guild_id, user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_companion_threads_user ON companion_threads (guild_id, user_id, status);
+CREATE INDEX IF NOT EXISTS idx_companion_agenda_user ON companion_agenda (guild_id, user_id, status);
 `;
 
 export const MEMORY_VERSIONS_KEPT = 10;
@@ -1142,4 +1153,27 @@ export function resolveCompanionThread(id) {
 
 export function archiveCompanionThread(id) {
   db.prepare("UPDATE companion_threads SET status = 'archived' WHERE id = ?").run(Number(id));
+}
+
+// -- companion autonomous agenda ----------------------------------------------
+
+export function addCompanionAgendaItem(guildId, userId, { note, source = null }) {
+  const ts = now();
+  const result = db.prepare(
+    'INSERT INTO companion_agenda (guild_id, user_id, note, source, status, created_at) '
+    + 'VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(String(guildId), String(userId), note, source, 'pending', ts);
+  return Number(result.lastInsertRowid);
+}
+
+/** Pending agenda items for a member, oldest (most-thought-about) first. */
+export function listPendingCompanionAgenda(guildId, userId, limit = 3) {
+  return db.prepare(
+    'SELECT * FROM companion_agenda WHERE guild_id = ? AND user_id = ? AND status = ? '
+    + 'ORDER BY created_at ASC LIMIT ?',
+  ).all(String(guildId), String(userId), 'pending', limit);
+}
+
+export function markCompanionAgendaUsed(id) {
+  db.prepare("UPDATE companion_agenda SET status = 'used', used_at = ? WHERE id = ?").run(now(), Number(id));
 }

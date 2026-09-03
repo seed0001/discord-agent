@@ -139,6 +139,24 @@ const players = new Map();           // guildId -> AudioPlayer
 const playlists = new Map();         // guildId -> { songs: [...], index: 0, active: true }
 const manualHold = new Map();        // guildId -> channelId pinned via a join command
 const notReadySince = new Map();     // guildId -> ms timestamp connection left Ready
+// guildId set — companion/session.js holds this during its leave/rejoin grace
+// window so a quick disconnect doesn't get raced by rebalance's own
+// empty-channel teardown (see beginGraceHold/endGraceHold below). Deliberately
+// NOT reusing manualHold: that map's whole point is to resume auto mode the
+// moment its pinned channel empties out, the opposite of what a grace period
+// needs.
+const graceHold = new Set();
+
+/** Suppress rebalance's empty-channel teardown for this guild until
+ *  endGraceHold is called. Caller's responsibility to always pair the two —
+ *  see companion/session.js's leave-branch/grace-timer handling. */
+export function beginGraceHold(guildId) {
+  graceHold.add(String(guildId));
+}
+
+export function endGraceHold(guildId) {
+  graceHold.delete(String(guildId));
+}
 const lastWake = new Map();          // channelId -> ms timestamp
 const lastText = new Map();          // userId -> [normalizedText, ms timestamp]
 const pendingWake = new Map();       // channelId -> { cancelled, controller }
@@ -371,6 +389,10 @@ async function rebalance(guild) {
       return;
     }
   }
+
+  // A companion session is mid-grace-window (user just left, might rejoin
+  // any second) — don't tear down or move the connection out from under it.
+  if (graceHold.has(String(guild.id))) return;
 
   const current = connection && guild.channels.cache.get(connection.joinConfig.channelId);
   if (connection && current && humanCount(current) > 0) return; // stay put

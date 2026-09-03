@@ -44,9 +44,21 @@ function location(entry) {
 /** Recent turns formatted for a system/context prompt, tagged with where
  * each one happened — same convention as the Python bot's memory.py, which
  * is what lets the model answer "did you see what I posted in #general"
- * regardless of which channel or modality it's being asked from. */
-export function formatForPrompt(guildId, limit = MAX_TURNS) {
-  return getRecentTurns(guildId, limit)
+ * regardless of which channel or modality it's being asked from.
+ *
+ * `speakers`, when given, restricts the buffer to only those speaker names
+ * before formatting — the buffer is guild-wide and unfiltered by default
+ * (fine for a reactive same-user reply), but a pass that manufactures things
+ * to proactively bring up (companion/autonomous.js's reflection loop) must
+ * not let another member's chatter surface as something worth telling the
+ * primary companion user. */
+export function formatForPrompt(guildId, limit = MAX_TURNS, { speakers } = {}) {
+  let turns = getRecentTurns(guildId, limit);
+  if (speakers?.length) {
+    const allowed = new Set(speakers);
+    turns = turns.filter((t) => allowed.has(t.speaker));
+  }
+  return turns
     .map((t) => `[${location(t)}] ${t.speaker}: ${t.text}`)
     .join('\n');
 }

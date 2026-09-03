@@ -13,12 +13,27 @@
 // instead of depending on any single one of them.
 import * as db from '../db.js';
 import * as voice from '../voice.js';
+import { chat, OpenRouterError } from '../openrouter.js';
+import * as memory from '../memory.js';
+import { buildSystemPrompt } from '../systemPrompt.js';
 import * as stateMod from './state.js';
 import * as events from './events.js';
 import * as threadsMod from './threads.js';
 import * as dmChat from './dm.js';
 
 const sessions = new Map(); // guildId -> session record (see beginWaiting)
+
+// How long to keep the room reserved (and the session "conversing") after the
+// primary user leaves, before treating it as a real end — long enough to
+// survive a quick reconnect/rejoin without breaking continuity, short enough
+// that a genuine departure still closes out promptly.
+const LEAVE_GRACE_MS = 45_000;
+
+// A generic, in-character-neutral fallback for the rare case the opener call
+// returns nothing usable — better than silently failing to speak, and must
+// NOT fall back to replaying the DM's `spoken` line (that's the bug this
+// exists to fix).
+const FALLBACK_OPENER = "hey — glad you're here.";
 
 function nowSec() {
   return Math.floor(Date.now() / 1000);
@@ -77,7 +92,7 @@ export function recordDeliberateContact(guildId, userId, reason) {
  * the duplicate-session guard — or the room can't be joined.
  */
 export async function beginWaiting(guild, member, {
-  intent, spoken, isConcernCheckin, roomChannel,
+  intent, spoken, isConcernCheckin, roomChannel, agendaNote = null,
 }) {
   const key = String(guild.id);
   const existing = sessions.get(key);
@@ -100,6 +115,7 @@ export async function beginWaiting(guild, member, {
     roomChannelId: roomChannel.id,
     intent,
     spoken,
+    agendaNote,
     isConcernCheckin: Boolean(isConcernCheckin),
     waitTimer,
     maxDurationTimer: null,
@@ -137,12 +153,43 @@ async function handleTimeout(guild) {
   console.log(`[COMPANION] invite ignored guild=${guild.id} concernCheckin=${s.isConcernCheckin}`);
 }
 
+/** One short LLM call the moment the invited user actually joins voice —
+ *  replaces blindly replaying the DM's `spoken` line (which they already
+ *  heard as a voice clip / read as text) with a fresh reaction anchored on
+ *  the same context: open threads and whatever agenda item motivated this
+ *  invite in the first place. Real conversational model, not background/
+ *  utility — this is a real thing a person hears, same reasoning as
+ *  invite.js's own draft call. `guild.client` avoids needing a separate
+ *  client param — discord.js Guild instances carry it. */
+async function draftOpener(guild, member, packetText) {
+  const model = db.getSetting(guild.id, 'ai_model');
+  const systemPrompt = buildSystemPrompt({
+    client: guild.client, guild, owner: false, memory: memory.getContext(guild.id, member.id),
+  }) + '\n\nYou already sent them a DM invitation, and the voice clip on it already said your '
+    + "opening thought — they've now actually joined voice. Do NOT repeat or rephrase that "
+    + "invitation. React naturally to them showing up, in the moment, continuing from what's "
+    + 'actually on your mind below. One or two short sentences, natural to say out loud, no '
+    + `markdown.\n\n${packetText}`;
+  try {
+    const reply = await chat([{ role: 'system', content: systemPrompt }], {
+      guildId: guild.id, model, maxTokens: 120,
+    });
+    return (reply || '').trim() || FALLBACK_OPENER;
+  } catch (err) {
+    if (err instanceof OpenRouterError) {
+      console.warn('[COMPANION] opener draft failed, using fallback:', err.message);
+      return FALLBACK_OPENER;
+    }
+    throw err;
+  }
+}
+
 /** The primary user joined the room while a session was waiting for them —
- *  called from handleVoiceStateUpdate below. Speaks the opening line (the
- *  same text drafted for the DM/voice-clip invitation — no second LLM
- *  call), opens a follow-up window immediately so the existing wake-word/
- *  follow-up machinery carries the rest of the conversation, and starts the
- *  hard max-duration backstop. */
+ *  called from handleVoiceStateUpdate below. Drafts and speaks a fresh
+ *  opening line (see draftOpener — deliberately NOT the DM's `spoken` text,
+ *  they already got that), opens a follow-up window immediately so the
+ *  existing wake-word/follow-up machinery carries the rest of the
+ *  conversation, and starts the hard max-duration backstop. */
 async function handleUserJoined(guild, member) {
   const key = String(guild.id);
   const s = sessions.get(key);
@@ -164,12 +211,13 @@ async function handleUserJoined(guild, member) {
   // before the invite went out (companion/intent.js) specifically so the
   // companion already knows why it reached out the moment the user joins.
   const packet = stateMod.buildContextPacket(state, {
-    pattern, threads: openThreads, intentPhrase: s.intent.phrase,
+    pattern, threads: openThreads, intentPhrase: s.intent.phrase, agendaNote: s.agendaNote,
   });
   voice.setCompanionContext(guild.id, packet.text);
 
   const channel = guild.channels.cache.get(s.roomChannelId);
-  const spoke = channel ? await voice.speakInVoice(guild, s.spoken) : false;
+  const opener = channel ? await draftOpener(guild, member, packet.text) : null;
+  const spoke = opener ? await voice.speakInVoice(guild, opener) : false;
   if (channel) await voice.armFollowUp(channel, spoke, voice.currentFollowUpEpoch(channel.id));
 
   const maxMin = Number(db.getSetting(guild.id, 'companion_session_max_minutes')) || 15;
@@ -196,6 +244,8 @@ async function closeSession(guild, reason) {
   const s = sessions.get(key);
   if (!s || s.status !== 'conversing') return;
   clearTimeout(s.maxDurationTimer);
+  clearTimeout(s.leaveGraceTimer);
+  voice.endGraceHold(guild.id); // no-op if a leave-grace window wasn't active
   sessions.set(key, { status: 'idle' });
 
   voice.setCompanionContext(guild.id, null);
@@ -238,11 +288,28 @@ export async function handleModelEnded(guild) {
 export async function handleSilenceTimeout(guild, channel) {
   const s = sessions.get(String(guild.id));
   if (!s || s.roomChannelId !== channel.id) return;
+  // A leave-grace window is already deciding whether this session ends —
+  // don't let the follow-up window's own silence timer (which keeps running
+  // down even while the user is physically out of the room, since no speech
+  // is arriving either way) race it into closing early.
+  if (s.awaitingReturn) return;
   await closeSession(guild, 'silence');
 }
 
 export async function handleConnectionLost(guild) {
   await closeSession(guild, 'connection_lost');
+}
+
+/** The leave-grace window (see handleVoiceStateUpdate's leave branch) ran out
+ *  with no rejoin — actually end the conversation now. `epoch` guards against
+ *  a stale timer from an earlier leave/rejoin cycle closing a session that
+ *  has already moved on (belt-and-suspenders alongside the clearTimeout on
+ *  rejoin, mirroring voice.js's own followUpEpoch pattern). */
+async function handleGraceExpired(guild, epoch) {
+  const s = sessions.get(String(guild.id));
+  if (!s || s.status !== 'conversing' || !s.awaitingReturn || s.leaveEpoch !== epoch) return;
+  voice.endGraceHold(guild.id);
+  await closeSession(guild, 'user_left');
 }
 
 /**
@@ -251,6 +318,14 @@ export async function handleConnectionLost(guild) {
  * primary user leaving mid-conversation — plus logging (never
  * auto-starting) a spontaneous, unprompted room join as a reciprocity
  * signal when no invite is active.
+ *
+ * A leave mid-conversation does not end the session immediately: it opens a
+ * LEAVE_GRACE_MS window (voice.beginGraceHold suppresses voice.js's own
+ * empty-channel teardown for it — see voice.js's rebalance) so a quick
+ * disconnect/rejoin resumes in place instead of restarting. index.js
+ * registers this listener BEFORE voice.js's own for exactly this reason:
+ * beginGraceHold must run before rebalance gets a chance to tear the
+ * connection down on the same event.
  */
 export function handleVoiceStateUpdate(oldState, newState) {
   const guild = newState.guild || oldState.guild;
@@ -266,11 +341,23 @@ export function handleVoiceStateUpdate(oldState, newState) {
   const leftRoom = oldState.channelId === roomId && newState.channelId !== roomId;
   if (!joinedRoom && !leftRoom) return;
 
-  const s = sessions.get(String(guild.id));
+  const key = String(guild.id);
+  const s = sessions.get(key);
 
   if (joinedRoom) {
     if (s && s.status === 'waiting') {
       handleUserJoined(guild, member).catch((err) => console.error('[COMPANION] join handling failed:', err.message));
+    } else if (s && s.status === 'conversing' && s.awaitingReturn) {
+      // Rejoined within the grace window — resume in place, no re-invite,
+      // no forced new line (that would just recreate the duplicate-message
+      // problem). The existing wake-word/follow-up flow picks back up
+      // naturally once they speak.
+      clearTimeout(s.leaveGraceTimer);
+      voice.endGraceHold(guild.id);
+      sessions.set(key, {
+        ...s, awaitingReturn: false, leaveGraceTimer: null,
+      });
+      console.log(`[COMPANION] rejoined within grace window guild=${guild.id}`);
     } else if (!s || s.status === 'idle') {
       // Spontaneous — a strong reciprocity signal (see companion/scheduler.js
       // for why this counts more than incidental presence). Logged only in
@@ -282,8 +369,18 @@ export function handleVoiceStateUpdate(oldState, newState) {
       state = stateMod.applyEvent(state, 'user_joined_companion_room', {}, nowSec());
       stateMod.save(guild.id, member.id, state);
     }
-  } else if (leftRoom && s && s.status === 'conversing') {
-    closeSession(guild, 'user_left').catch((err) => console.error('[COMPANION] close-on-leave failed:', err.message));
+  } else if (leftRoom && s && s.status === 'conversing' && !s.awaitingReturn) {
+    // Synchronous, deliberately not deferred into an async function — must
+    // run before control returns to EventEmitter.emit so voice.js's
+    // rebalance (the next listener for this same event) sees the hold.
+    voice.beginGraceHold(guild.id);
+    const epoch = (s.leaveEpoch || 0) + 1;
+    const leaveGraceTimer = setTimeout(() => {
+      handleGraceExpired(guild, epoch).catch((err) => console.error('[COMPANION] grace-expiry close failed:', err.message));
+    }, LEAVE_GRACE_MS);
+    sessions.set(key, {
+      ...s, awaitingReturn: true, leaveEpoch: epoch, leaveGraceTimer,
+    });
   }
 }
 

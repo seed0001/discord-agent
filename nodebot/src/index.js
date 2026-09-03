@@ -190,7 +190,14 @@ client.on(Events.GuildMemberRemove, async (member) => {
   }
 });
 
-client.on(Events.VoiceStateUpdate, voice.handleVoiceStateUpdate);
+// Companion's listener MUST run before voice.js's own: on a leave, it needs
+// to call voice.beginGraceHold synchronously before voice.js's rebalance
+// (triggered by this same event) gets a chance to tear the connection down.
+// rebalance() has no await before its empty-channel leaveGuild() call, so
+// whichever listener runs first wins the race outright — this isn't a
+// preference, it's the only ordering that works. Harmless for every other
+// guild/event: this listener guard-clauses out immediately unless it's the
+// primary companion user leaving the configured room.
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   // Separate listener, own try/catch: detects the primary companion user
   // joining/leaving the configured Private Companion Room. No-op for every
@@ -201,6 +208,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
     console.error('companion voice state handling failed:', err);
   }
 });
+client.on(Events.VoiceStateUpdate, voice.handleVoiceStateUpdate);
 
 process.on('unhandledRejection', (err) => console.error('unhandled rejection:', err));
 

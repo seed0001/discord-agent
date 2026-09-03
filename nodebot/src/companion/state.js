@@ -256,10 +256,13 @@ function buildStance(pressures) {
  * @param {string} [opts.pattern]      one line from events.js's summarizePattern
  * @param {Array}  [opts.threads]      open threads, most important first
  * @param {string} [opts.intentPhrase] the session's fixed intent phrase
+ * @param {string} [opts.agendaNote]   a pending item from the autonomous
+ *   reflection loop (companion/agenda.js) — something real she wants to
+ *   bring up, as opposed to the abstract pressure numbers below it
  * @param {number} [opts.nowSec]
  */
 export function buildContextPacket(state, {
-  pattern, threads = [], intentPhrase, nowSec = nowSeconds(),
+  pattern, threads = [], intentPhrase, agendaNote, nowSec = nowSeconds(),
 } = {}) {
   const { pressures } = state;
   const absence = derivedAbsence(state, nowSec);
@@ -277,6 +280,7 @@ export function buildContextPacket(state, {
   const stance = buildStance(pressures);
   if (stance) lines.push(`STANCE: ${stance}`);
   if (intentPhrase) lines.push(`INTENT: ${intentPhrase}`);
+  if (agendaNote) lines.push(`AGENDA: ${agendaNote}`);
   return { text: lines.join('\n'), absence };
 }
 

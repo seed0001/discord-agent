@@ -8,6 +8,7 @@ import { wallParts, validTimezone } from '../calendar.js';
 import * as stateMod from './state.js';
 import * as events from './events.js';
 import * as threadsMod from './threads.js';
+import * as agenda from './agenda.js';
 import { selectIntent } from './intent.js';
 import * as invite from './invite.js';
 import * as session from './session.js';
@@ -100,10 +101,20 @@ async function evaluateGuild(client, guild, opts = {}) {
   }
 
   const pattern = events.summarizePattern(guild.id, primaryUserId);
-  const packet = stateMod.buildContextPacket(state, { pattern, threads: openThreads, intentPhrase: intent.phrase });
+  // The top pending item from the autonomous reflection loop (see
+  // companion/autonomous.js) — real substance to reach out with, instead of
+  // just the abstract pressure numbers below it. May be null if nothing's
+  // pending, which is the common case.
+  const agendaItem = agenda.pending(guild.id, primaryUserId, 1)[0] || null;
+  const packet = stateMod.buildContextPacket(state, {
+    pattern, threads: openThreads, intentPhrase: intent.phrase, agendaNote: agendaItem?.note,
+  });
 
   const result = await invite.send(client, guild, member, packet.text);
   if (!result.ok) return; // dm_delivery_failed already recorded by invite.js — nothing else changes
+  // Consumed the moment it's actually delivered — same "never replay"
+  // principle as the DM/voice-join text itself, generalized to agenda items.
+  if (agendaItem) agenda.markUsed(agendaItem.id);
 
   events.record(guild.id, primaryUserId, 'voice_invite_sent', {
     intent: intent.code, concernCheckin: driveResult.isConcernCheckin,
@@ -117,7 +128,11 @@ async function evaluateGuild(client, guild, opts = {}) {
   stateMod.save(guild.id, primaryUserId, updated, now);
 
   await session.beginWaiting(guild, member, {
-    intent, spoken: result.spoken, isConcernCheckin: driveResult.isConcernCheckin, roomChannel,
+    intent,
+    spoken: result.spoken,
+    isConcernCheckin: driveResult.isConcernCheckin,
+    roomChannel,
+    agendaNote: agendaItem?.note || null,
   });
 }
 
