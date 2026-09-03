@@ -78,6 +78,22 @@ function hasDegenerateRepetition(content) {
   return run >= REPEAT_RUN_MIN;
 }
 
+// Some free/open-weight models on OpenRouter were fine-tuned on their own
+// non-standard function-calling template and, when offered `tools`, role-play
+// a tool call as plain text in that template instead of using the API's
+// structured tool_calls field — e.g. `<｜DSML｜tool_calls><｜DSML｜invoke
+// name="...">...`. That's a 200 OK with a real (garbage) reply, not an HTTP
+// rejection, so it never reaches ToolUnsupportedError's catch — nothing else
+// in this loop would stop it from being metered and shipped straight to
+// Discord as the bot's actual message. `｜` is U+FF5C (fullwidth vertical
+// line), distinctive enough that it won't false-positive on ordinary text or
+// code; the tag names cover the other templates seen in the wild.
+const LEAKED_TOOL_SYNTAX_RE = /<｜|<\/?(?:tool_calls?|function_calls|antml:invoke)\b/i;
+
+function looksLikeLeakedToolSyntax(content) {
+  return LEAKED_TOOL_SYNTAX_RE.test(content || '');
+}
+
 const RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const MAX_RETRIES = 3;              // additional attempts, foreground only
 const BASE_BACKOFF_MS = 700;
@@ -396,9 +412,22 @@ export async function chat(messages, {
     const toolCalls = reply.tool_calls;
     if (!(toolCalls?.length && useTools)) {
       const content = reply.content || '';
-      if (junkRetries < JUNK_RETRIES && (isJunkVerdict(content) || hasDegenerateRepetition(content))) {
+      if (useTools && looksLikeLeakedToolSyntax(content)) {
+        // Drop tools and let it answer in plain language — same recovery
+        // ToolUnsupportedError gets for a model that openly rejects tool
+        // use, just triggered by content instead of an HTTP error. Not
+        // counted against junkRetries: useTools only ever flips off once
+        // per call, so this can't loop.
+        console.warn(`[openrouter] ${payload.model} leaked tool-call syntax as content — retrying without tools`);
+        useTools = false;
+        continue;
+      }
+      if (junkRetries < JUNK_RETRIES
+        && (isJunkVerdict(content) || hasDegenerateRepetition(content) || looksLikeLeakedToolSyntax(content))) {
         junkRetries += 1;
-        const cause = isJunkVerdict(content) ? 'junk safety verdict' : 'degenerate repetition';
+        const cause = isJunkVerdict(content)
+          ? 'junk safety verdict'
+          : (hasDegenerateRepetition(content) ? 'degenerate repetition' : 'leaked tool-call syntax with no tools offered');
         console.log(`[openrouter] ${cause} from ${payload.model} — re-rolling (${junkRetries}/${JUNK_RETRIES})`);
         continue;
       }
