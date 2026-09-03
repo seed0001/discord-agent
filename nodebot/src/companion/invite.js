@@ -17,12 +17,25 @@ function parseInviteReply(text) {
   return { dm, spoken };
 }
 
-/** One cheap LLM call: the character's existing persona + the compact
- *  context packet + the pre-selected intent, asking for a short DM line and
- *  a short spoken line. Already gates/meters credits internally (chat()). */
+// A generic, in-character-neutral fallback for the rare case the model
+// returns nothing usable at all (empty, or garbage that parses to empty)
+// even on the real conversational model — better than either sending an
+// empty Discord message (which Discord rejects outright) or silently
+// dropping the invite.
+const FALLBACK_DM = "hey — got a minute to hop into voice? I'd like to actually talk.";
+
+/** One LLM call: the character's existing persona + the compact context
+ *  packet + the pre-selected intent, asking for a short DM line and a short
+ *  spoken line. Deliberately NOT `background: true` — that routes through
+ *  OPENROUTER_UTILITY_MODEL, a cheap/free tier meant for silent internal
+ *  housekeeping (classification, memory consolidation) where an occasional
+ *  garbage or empty reply is harmless. This is a real message a person
+ *  reads; it gets the same model as an ordinary conversational reply.
+ *  Already gates/meters credits internally (chat()). */
 async function draftInvite(client, guild, packetText) {
   const persona = db.getSetting(guild.id, 'ai_system_prompt');
   const name = botName(client, guild.id);
+  const model = db.getSetting(guild.id, 'ai_model');
   const prompt = [{
     role: 'system',
     content: `${persona}\n\nYou are ${name}. You are about to reach out to a member you have an ongoing `
@@ -33,8 +46,11 @@ async function draftInvite(client, guild, packetText) {
       + 'SPOKEN: <a short spoken version of the same invitation, natural to say out loud>\n'
       + 'No markdown, nothing before or after those two lines.',
   }];
-  const reply = await chat(prompt, { guildId: guild.id, background: true, maxTokens: 200 });
-  return parseInviteReply(reply);
+  const reply = await chat(prompt, { guildId: guild.id, model, maxTokens: 200 });
+  const { dm, spoken } = parseInviteReply(reply || '');
+  if (dm) return { dm, spoken: spoken || dm };
+  console.warn('[COMPANION] invite draft came back empty — using the fallback line');
+  return { dm: FALLBACK_DM, spoken: FALLBACK_DM };
 }
 
 /**
