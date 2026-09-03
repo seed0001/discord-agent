@@ -57,6 +57,27 @@ function isJunkVerdict(content) {
   return text.length < 40 && JUNK_VERDICT_RE.test(text);
 }
 
+// Some models (seen: MiniMax M2 via OpenRouter, no repetition penalty sent —
+// see the chat() payload below) occasionally finish a normal reply and then
+// spiral into repeating one short token or character until max_tokens cuts
+// them off, e.g. a real sentence followed by hundreds of "] ] ] ] ]...".
+// Neither a real HTTP error nor a short junk verdict, so nothing else here
+// catches it — without this it goes straight out as the reply. Checked only
+// near the tail: an intentional repeated character earlier in a real reply
+// (a run of "!" for emphasis, ASCII art) shouldn't trigger a re-roll.
+const REPEAT_RUN_MIN = 20;
+function hasDegenerateRepetition(content) {
+  const text = content || '';
+  const tail = text.slice(-400);
+  if (/(.)\1{39,}/.test(tail)) return true;
+  const tokens = tail.trim().split(/\s+/);
+  if (tokens.length < REPEAT_RUN_MIN) return false;
+  const last = tokens[tokens.length - 1];
+  let run = 0;
+  for (let i = tokens.length - 1; i >= 0 && tokens[i] === last; i -= 1) run += 1;
+  return run >= REPEAT_RUN_MIN;
+}
+
 const RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const MAX_RETRIES = 3;              // additional attempts, foreground only
 const BASE_BACKOFF_MS = 700;
@@ -375,9 +396,10 @@ export async function chat(messages, {
     const toolCalls = reply.tool_calls;
     if (!(toolCalls?.length && useTools)) {
       const content = reply.content || '';
-      if (isJunkVerdict(content) && junkRetries < JUNK_RETRIES) {
+      if (junkRetries < JUNK_RETRIES && (isJunkVerdict(content) || hasDegenerateRepetition(content))) {
         junkRetries += 1;
-        console.log(`[openrouter] junk safety verdict from ${payload.model} — re-rolling (${junkRetries}/${JUNK_RETRIES})`);
+        const cause = isJunkVerdict(content) ? 'junk safety verdict' : 'degenerate repetition';
+        console.log(`[openrouter] ${cause} from ${payload.model} — re-rolling (${junkRetries}/${JUNK_RETRIES})`);
         continue;
       }
       // Metered here, at the one point a reply is actually produced — never
