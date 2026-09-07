@@ -13,6 +13,7 @@ import * as calendar from './calendar.js';
 import * as companionSession from './companion/session.js';
 import * as companionScheduler from './companion/scheduler.js';
 import * as companionAutonomous from './companion/autonomous.js';
+import * as companionCycle from './companion/cycle.js';
 import * as logbuffer from './logbuffer.js';
 import { startDashboard, applyPresence } from './web/server.js';
 import * as backendCatalog from './backends/catalog.js';
@@ -97,6 +98,9 @@ client.once(Events.ClientReady, (c) => {
   // hasn't turned on Companion Mode (see db.DEFAULTS.companion_enabled).
   companionScheduler.startTicker(c);
   companionAutonomous.startTicker(c);
+  // Residence presence — no-op for every guild that hasn't turned on
+  // companion_residence_mode (see db.DEFAULTS.companion_residence_mode).
+  companionCycle.startTicker(c);
   applyPresence(c);
   startDashboard(c);
   // Keep the list of available OpenRouter models fresh, so there is something

@@ -193,6 +193,22 @@ test('a concern check-in that gets ignored too triggers the resistance spike and
   assert.equal(cooldown, 4 * (1 + stateMod.DRIVE.CONCERN_IGNORED_COOLDOWN_MULT));
 });
 
+test('omitting socialPull (every non-residence caller) does not change reach_out_drive at all', () => {
+  const state = baseState();
+  const withoutOpts = stateMod.computeReachOutDrive(state, 1_000_000);
+  const withZero = stateMod.computeReachOutDrive(state, 1_000_000, { socialPull: 0 });
+  assert.equal(withoutOpts.drive, withZero.drive);
+  assert.equal(withoutOpts.socialPullBonus, 0);
+});
+
+test('a high socialPull (residence mode) raises reach_out_drive by a bounded bonus', () => {
+  const state = baseState();
+  const base = stateMod.computeReachOutDrive(state, 1_000_000);
+  const withPull = stateMod.computeReachOutDrive(state, 1_000_000, { socialPull: 0.9 });
+  assert.ok(withPull.drive > base.drive, `expected socialPull to raise drive, got ${withPull.drive} vs ${base.drive}`);
+  assert.ok(Math.abs(withPull.socialPullBonus - 0.9 * stateMod.DRIVE.SOCIAL_PULL_WEIGHT) < 1e-9);
+});
+
 test('effectiveCooldownHours is just the base cooldown outside a concern-check-in-ignored state', () => {
   assert.equal(stateMod.effectiveCooldownHours(baseState(), 4), 4);
 });

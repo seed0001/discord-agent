@@ -208,6 +208,38 @@ CREATE TABLE IF NOT EXISTS companion_agenda (
     created_at INTEGER NOT NULL,
     used_at    INTEGER
 );
+-- Residence "rooms" for companion/cycle.js: named locations in a companion's
+-- dedicated guild, each tied to one voice channel (where her live voice
+-- connection goes while she's in that room) and optionally a text channel
+-- (for arrival/journal lines). One phase_type per room in v1 — a room usable
+-- across multiple phases is a later, purely additive change.
+CREATE TABLE IF NOT EXISTS companion_rooms (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id         TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    voice_channel_id TEXT NOT NULL,
+    text_channel_id  TEXT,
+    phase_type       TEXT NOT NULL,
+    active           INTEGER NOT NULL DEFAULT 1,
+    created_at       INTEGER NOT NULL
+);
+-- Her own internal-life pressures (companion/drives.js) — a separate axis
+-- from companion_state's relationship pressures above (that's about the
+-- relationship TO the primary user; this is about her own energy/mood).
+-- One row per guild: there is one of her, not one per relationship. Pure
+-- pressure-driven, no wall-clock time anywhere — phase is derived from these
+-- four values crossing thresholds, ticked forward from updated_at exactly
+-- like companion_state's pressures are.
+CREATE TABLE IF NOT EXISTS companion_drives (
+    guild_id         TEXT PRIMARY KEY,
+    energy           REAL NOT NULL,
+    restlessness     REAL NOT NULL,
+    boredom          REAL NOT NULL,
+    social_pull      REAL NOT NULL,
+    phase            TEXT NOT NULL,
+    phase_started_at INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_warnings_guild_user ON warnings (guild_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_logs_guild ON mod_logs (guild_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_memver ON memory_versions (guild_id, kind, version);
@@ -218,6 +250,7 @@ CREATE INDEX IF NOT EXISTS idx_calendar_guild ON calendar_events (guild_id, acti
 CREATE INDEX IF NOT EXISTS idx_companion_events_user ON companion_events (guild_id, user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_companion_threads_user ON companion_threads (guild_id, user_id, status);
 CREATE INDEX IF NOT EXISTS idx_companion_agenda_user ON companion_agenda (guild_id, user_id, status);
+CREATE INDEX IF NOT EXISTS idx_companion_rooms_guild ON companion_rooms (guild_id, phase_type, active);
 `;
 
 export const MEMORY_VERSIONS_KEPT = 10;
@@ -456,6 +489,15 @@ export const DEFAULTS = {
   companion_autonomous_image: false,
   companion_autonomous_music: false,
   companion_autonomous_video: false,
+  // Residence mode (companion/cycle.js): trims GitHub/repo tools and the
+  // default capability-info text (see persona.js's RESIDENCE_CAPABILITY_PROMPT
+  // and textChat.js/voice.js's tool assembly), and turns on the pressure-
+  // driven presence cycle (companion/drives.js, companion/cycle.js). Off by
+  // default and independent from companion_enabled — set this ONLY on a
+  // guild meant to be her dedicated residence; a guild using the plain
+  // relationship engine on the main server should not inherit the trim or
+  // the cycle. Her persona (ai_system_prompt) is never touched by this.
+  companion_residence_mode: false,
 };
 
 let db = null;
@@ -1098,6 +1140,41 @@ export function saveCompanionState(guildId, userId, state) {
   );
 }
 
+// -- companion internal-life drives ------------------------------------------
+// See companion/drives.js for the pressure/threshold math. One row per
+// guild — there is one of her, not one per relationship, unlike
+// companion_state above.
+
+export function getCompanionDrives(guildId) {
+  const row = db.prepare('SELECT * FROM companion_drives WHERE guild_id = ?').get(String(guildId));
+  if (!row) return null;
+  return {
+    energy: row.energy,
+    restlessness: row.restlessness,
+    boredom: row.boredom,
+    socialPull: row.social_pull,
+    phase: row.phase,
+    phaseStartedAt: row.phase_started_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Full upsert — same "always recompute the whole thing together" shape as
+ *  saveCompanionState, since these four values decay/transition as one unit. */
+export function saveCompanionDrives(guildId, drives) {
+  db.prepare(
+    'INSERT INTO companion_drives (guild_id, energy, restlessness, boredom, social_pull, phase, '
+    + 'phase_started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) '
+    + 'ON CONFLICT (guild_id) DO UPDATE SET '
+    + 'energy = excluded.energy, restlessness = excluded.restlessness, boredom = excluded.boredom, '
+    + 'social_pull = excluded.social_pull, phase = excluded.phase, '
+    + 'phase_started_at = excluded.phase_started_at, updated_at = excluded.updated_at',
+  ).run(
+    String(guildId), drives.energy, drives.restlessness, drives.boredom, drives.socialPull,
+    drives.phase, drives.phaseStartedAt, now(),
+  );
+}
+
 // -- companion event log ------------------------------------------------------
 // Structured, compact rows — never raw conversation text. See the spec's
 // event list in companion/events.js for the `type` vocabulary.
@@ -1190,4 +1267,36 @@ export function listPendingCompanionAgenda(guildId, userId, limit = 3) {
 
 export function markCompanionAgendaUsed(id) {
   db.prepare("UPDATE companion_agenda SET status = 'used', used_at = ? WHERE id = ?").run(now(), Number(id));
+}
+
+// -- companion residence rooms ------------------------------------------------
+// See companion/cycle.js — one row per named location in a residence guild.
+
+export function addCompanionRoom(guildId, { name, voiceChannelId, textChannelId = null, phaseType }) {
+  const result = db.prepare(
+    'INSERT INTO companion_rooms (guild_id, name, voice_channel_id, text_channel_id, phase_type, '
+    + 'active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run(String(guildId), name, String(voiceChannelId), textChannelId === null ? null : String(textChannelId),
+    phaseType, 1, now());
+  return Number(result.lastInsertRowid);
+}
+
+/** Active rooms for a guild, optionally narrowed to one phase — used by
+ *  cycle.js to pick where she goes for the current phase. */
+export function listCompanionRooms(guildId, phaseType = null) {
+  if (phaseType) {
+    return db.prepare(
+      'SELECT * FROM companion_rooms WHERE guild_id = ? AND phase_type = ? AND active = 1 ORDER BY id',
+    ).all(String(guildId), phaseType);
+  }
+  return db.prepare('SELECT * FROM companion_rooms WHERE guild_id = ? AND active = 1 ORDER BY id')
+    .all(String(guildId));
+}
+
+/** Soft-delete — keeps the row (and its id) around rather than a hard
+ *  DELETE, same convention as companion_threads' archive vs. resolve. */
+export function removeCompanionRoom(guildId, id) {
+  const result = db.prepare('UPDATE companion_rooms SET active = 0 WHERE guild_id = ? AND id = ?')
+    .run(String(guildId), Number(id));
+  return result.changes > 0;
 }

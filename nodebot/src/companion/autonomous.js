@@ -40,7 +40,15 @@ const REFLECT_MAX_TOOL_ROUNDS = 2; // bounded — this runs unattended, on a tim
 const lastReflectionAt = new Map();
 
 function enabledCategories(guildId) {
-  return DEFERRED_CATEGORIES.filter((c) => db.getSetting(guildId, `companion_autonomous_${c}`));
+  // Residence mode (companion/cycle.js): image/music are handled for REAL by
+  // the relax-phase hobby generation there now, not this deferred/no-op
+  // lottery — running both would double up on the same two categories. She
+  // also doesn't do coding at all there (capability trim). Only 'video'
+  // remains meaningfully deferred for a residence guild. Every other
+  // companion_enabled guild (not using residence mode) is completely
+  // unaffected — DEFERRED_CATEGORIES itself is unchanged.
+  const categories = db.getSetting(guildId, 'companion_residence_mode') ? ['video'] : DEFERRED_CATEGORIES;
+  return categories.filter((c) => db.getSetting(guildId, `companion_autonomous_${c}`));
 }
 
 async function tickGuild(client, guild) {

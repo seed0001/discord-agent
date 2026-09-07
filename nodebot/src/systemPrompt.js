@@ -13,6 +13,7 @@ import * as db from './db.js';
 import { botName } from './botName.js';
 import {
   OWNER_NOTE, MEMBER_NOTE, MEDIA_NOTE, MUSIC_NOTE, VISION_NOTE, CHANNEL_BRAINS_NOTE,
+  RESIDENCE_CAPABILITY_PROMPT,
 } from './persona.js';
 // Safe import: channelBrains.js reads only config.js, so no cycle through db.
 import { enabled as channelBrainsEnabled } from './channelBrains.js';
@@ -49,8 +50,19 @@ export function commandList(client) {
 export function buildSystemPrompt({
   client, guild, owner = false, memory = '', media = false, music = false,
 }) {
+  // Her identity/persona (ai_system_prompt) is always exactly what's
+  // configured for this guild — this file never seeds or overrides it.
   const persona = db.getSetting(guild.id, 'ai_system_prompt');
-  const capabilities = db.getSetting(guild.id, 'ai_capability_prompt');
+  // Capabilities default to a GitHub/coding-free version in residence mode,
+  // but ONLY as a computed fallback — the instant a guild saves its own
+  // ai_capability_prompt (from the dashboard), that saved copy always wins,
+  // exactly like ai_capability_prompt's own default mechanism in db.js.
+  // Nothing is ever written to a guild's settings because of this.
+  const capabilities = db.hasSetting(guild.id, 'ai_capability_prompt')
+    ? db.getSetting(guild.id, 'ai_capability_prompt')
+    : (db.getSetting(guild.id, 'companion_residence_mode')
+      ? RESIDENCE_CAPABILITY_PROMPT
+      : db.getSetting(guild.id, 'ai_capability_prompt'));
   const name = botName(client, guild.id);
   const commands = commandList(client);
 

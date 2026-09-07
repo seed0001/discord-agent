@@ -297,6 +297,12 @@ export const DRIVE = {
   RESISTANCE_CONCERN_IGNORED_SPIKE: 0.5,
   INITIATE_THRESHOLD: 0.55,
   CONCERN_IGNORED_COOLDOWN_MULT: 3, // effectiveCooldown multiplier after a concern check-in is ignored too
+  // Residence mode only (companion/drives.js's socialPull, passed in by
+  // callers as opts.socialPull — see below). Ambient desire for company
+  // doesn't just move her between rooms, it also makes actual outreach
+  // somewhat more likely, so the two systems aren't duplicating "does she
+  // want to talk to you" independently of each other.
+  SOCIAL_PULL_WEIGHT: 0.3,
 };
 
 /**
@@ -306,8 +312,12 @@ export const DRIVE = {
  * abnormal absence and rising concern can still push this over threshold
  * once (a "concerned check-in"), even while initiative_confidence itself is
  * depressed from recent ignores.
+ *
+ * @param {object} opts
+ * @param {number} [opts.socialPull] residence mode only — her own ambient
+ *   desire for company (companion/drives.js), 0 for every other caller.
  */
-export function computeReachOutDrive(state, nowSec = nowSeconds()) {
+export function computeReachOutDrive(state, nowSec = nowSeconds(), { socialPull = 0 } = {}) {
   const { pressures } = state;
   const absence = derivedAbsence(state, nowSec);
   const concernEligible = pressures.investment > DRIVE.MATURE_INVESTMENT
@@ -319,14 +329,17 @@ export function computeReachOutDrive(state, nowSec = nowSeconds()) {
   const ignoreResistance = state.consecutiveIgnored * DRIVE.RESISTANCE_PER_IGNORE
     + (concernCheckinIgnored ? DRIVE.RESISTANCE_CONCERN_IGNORED_SPIKE : 0);
 
+  const socialPullBonus = DRIVE.SOCIAL_PULL_WEIGHT * clamp01(socialPull);
   const drive = pressures.initiative_confidence
     + DRIVE.THREAD_WEIGHT * pressures.unfinished_thread_pressure
     + concernBonus
+    + socialPullBonus
     - ignoreResistance;
 
   return {
     drive,
     concernBonus,
+    socialPullBonus,
     concernEligible,
     ignoreResistance,
     isConcernCheckin: concernEligible && drive >= DRIVE.INITIATE_THRESHOLD

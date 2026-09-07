@@ -12,6 +12,7 @@ import * as agenda from './agenda.js';
 import { selectIntent } from './intent.js';
 import * as invite from './invite.js';
 import * as session from './session.js';
+import * as drivesMod from './drives.js';
 
 const TICK_EVERY_MS = 10 * 60 * 1000; // 10 minutes — frequent enough to feel organic, cheap enough to poll
 
@@ -20,6 +21,14 @@ function nowSec() {
 }
 
 export function inQuietHours(guildId, atSec) {
+  // Residence mode (companion/cycle.js): her own pressure-driven sleep phase
+  // is authoritative here, layered ON TOP of (not replacing) the manual
+  // companion_quiet_hours_* window below — a guild can still add an extra
+  // manual blackout on top if it wants one. No-op for every guild not using
+  // residence mode, since drivesMod.load() is only ever consulted here.
+  if (db.getSetting(guildId, 'companion_residence_mode') && drivesMod.load(guildId, atSec).phase === 'sleep') {
+    return true;
+  }
   const start = db.getSetting(guildId, 'companion_quiet_hours_start');
   const end = db.getSetting(guildId, 'companion_quiet_hours_end');
   if (!start || !end) return false;
@@ -83,7 +92,14 @@ async function evaluateGuild(client, guild, opts = {}) {
   const effCooldown = stateMod.effectiveCooldownHours(state, baseCooldown);
   if (!opts.bypassCooldown && state.lastInviteAt && (now - state.lastInviteAt) / 3600 < effCooldown) return;
 
-  const driveResult = stateMod.computeReachOutDrive(state, now);
+  // Residence mode: her own ambient desire for company (drives.js's
+  // socialPull) adds to reach_out_drive rather than just moving her between
+  // rooms — see state.js's DRIVE.SOCIAL_PULL_WEIGHT. No-op for every guild
+  // not using residence mode.
+  const socialPull = db.getSetting(guild.id, 'companion_residence_mode')
+    ? drivesMod.load(guild.id, now).socialPull
+    : 0;
+  const driveResult = stateMod.computeReachOutDrive(state, now, { socialPull });
   if (!opts.bypassCooldown && driveResult.drive < stateMod.DRIVE.INITIATE_THRESHOLD) {
     logDecision(guild.id, state, now, 'NO', suppressReason(state, driveResult));
     return;

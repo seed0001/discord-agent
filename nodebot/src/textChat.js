@@ -219,12 +219,15 @@ export async function handleMessage(client, message) {
   // Python bot's auto-attach — cached, so repeated mentions of one repo in a
   // conversation don't burn through the API rate limit.
   let repoContext = '';
-  try {
-    const refs = github.findRepoRefs(content).slice(0, 2);
-    const lookups = await Promise.all(refs.map(([o, n]) => github.githubRepo(`${o}/${n}`)));
-    repoContext = lookups.join('\n\n');
-  } catch (err) {
-    console.warn('[github] repo auto-attach failed:', err?.message || err);
+  const residenceMode = db.getSetting(guildId, 'companion_residence_mode');
+  if (!residenceMode) {
+    try {
+      const refs = github.findRepoRefs(content).slice(0, 2);
+      const lookups = await Promise.all(refs.map(([o, n]) => github.githubRepo(`${o}/${n}`)));
+      repoContext = lookups.join('\n\n');
+    } catch (err) {
+      console.warn('[github] repo auto-attach failed:', err?.message || err);
+    }
   }
   const transcript = formatForPrompt(guildId, HISTORY_LIMIT);
   // The speaker's own profile card comes first, then guild-wide durable and
@@ -242,7 +245,10 @@ export async function handleMessage(client, message) {
   const model = modelForTurn(guildId, imageParts.length > 0);
   const baseTools = [
     ...TOOL_SCHEMAS, ...KB_TOOL_SCHEMAS, memory.RECALL_TOOL_SCHEMA,
-    ...github.GITHUB_TOOL_SCHEMAS, ...REPO_TOOL_SCHEMAS,
+    // Residence mode (companion/cycle.js) trims GitHub/repo access entirely —
+    // she doesn't have a codebase to talk about. Every other guild is
+    // unaffected since the setting defaults to false.
+    ...(residenceMode ? [] : [...github.GITHUB_TOOL_SCHEMAS, ...REPO_TOOL_SCHEMAS]),
     ...calendar.CALENDAR_TOOL_SCHEMAS,
     ...(voiceTools.enabled() ? voiceTools.TOOL_SCHEMAS : []),
   ];

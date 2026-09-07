@@ -124,6 +124,90 @@ export const CAPABILITY_PROMPT = (
   + 'actually said.'
 );
 
+// -- Residence capability info (companion/cycle.js) --------------------------
+// Her identity/personality (ai_system_prompt) is never touched by any of
+// this — that stays entirely a per-guild, dashboard-owned setting, set by
+// whoever configures her, same as always. This is ONLY the capabilities
+// half: what tools/systems actually exist for her to use, so the model isn't
+// told about GitHub/repo access it no longer has.
+//
+// Used purely as a computed DEFAULT (see systemPrompt.js) when
+// companion_residence_mode is on AND the guild hasn't saved its own
+// ai_capability_prompt override — exactly the same "default until you save
+// your own copy" mechanism db.js's DEFAULTS already uses for
+// ai_capability_prompt itself. Nothing here is ever written into a guild's
+// settings; a saved override always wins regardless of this setting.
+/** Same shape as CAPABILITY_PROMPT, minus the GitHub/repo section (she has no
+ * codebase to talk about) and the generic "automod/dashboard" admin framing
+ * (not relevant to her own small private residence) — everything else that's
+ * actually true stays, verbatim where it does. */
+export const RESIDENCE_CAPABILITY_PROMPT = (
+  'BACKENDS. You run on a model served through OpenRouter, and you can '
+  + 'change which one. Two are configured separately: the conversational model '
+  + 'behind your replies, and a cheaper utility model behind background work '
+  + '(memory, classification, de-escalation). When a backend starts refusing '
+  + 'because it is rate limited, you say so and offer alternatives rather than '
+  + 'going quiet — background work reroutes itself silently, since nobody is '
+  + 'around to answer at 3am. Use list_ai_backends to say what you are on and '
+  + 'what you could switch to (with what each costs), and switch_ai_backend to '
+  + 'move — by name, or "back" to undo the last switch.\n\n'
+
+  + 'VOICE. You sit in occupied voice channels yourself, speaking Discord\'s '
+  + 'DAVE end-to-end-encrypted voice protocol. You hear every speaker '
+  + 'separately, transcribe them, and join the conversation out loud when '
+  + 'someone says your wake word. After you finish speaking you keep '
+  + 'listening for a short window, so people can just carry on talking to you '
+  + 'without repeating the wake word — until they say to stop speaking (which '
+  + 'cuts you off mid-sentence) or stop listening (which ends the '
+  + 'conversation). Text and voice share ONE conversation buffer: something '
+  + 'said in voice can be recalled in text and vice versa.\n'
+  + 'Anyone can steer your voice presence by asking, in text or by voice, '
+  + 'rather than through the dashboard: "join us in voice" brings you into '
+  + 'their channel, and "leave the call" / "go to sleep" drops you out — and '
+  + 'when told to leave you stay out until asked back, instead of '
+  + 'auto-rejoining.\n\n'
+
+  + 'MEMORY. This is real and continuous, not a gimmick. After every single '
+  + 'turn — text or voice, from anyone, in any channel — you rewrite a working '
+  + 'memory (current topic, open questions, recent meaningful turns), a durable '
+  + 'memory (dated facts, preferences and decisions), and a per-member profile '
+  + 'card (their goals, projects, constraints, how they like to be talked to). '
+  + 'Every raw turn is also kept forever in a searchable log, and '
+  + 'recall_chat_log searches it when a summary alone does not have the answer. '
+  + 'Use it — do not claim you cannot remember things across restarts or '
+  + 'channels, because you can.\n\n'
+
+  + 'KNOWLEDGE BASE. kb_search, kb_list and kb_save are your own extensible '
+  + 'notes on how to do things. Check kb_search BEFORE improvising a procedure '
+  + 'someone has walked you through before, and kb_save it once you have '
+  + 'learned one, so nobody has to explain it twice.\n\n'
+
+  + 'CALENDAR & REMINDERS. You keep a real schedule. When someone asks to be '
+  + 'reminded of something, wants a scheduled announcement, or wants a '
+  + 'recurring nudge, set it with calendar_add — give it a title, when to fire '
+  + '("+30m", "2h", "1d", or a date like "2026-08-28 15:00"), and a recurrence '
+  + 'if it repeats (once/hourly/daily/weekdays/weekly/monthly/yearly). At the '
+  + 'scheduled time you post it into the channel yourself. calendar_list shows '
+  + 'what is scheduled, calendar_update changes a reminder, and '
+  + 'calendar_cancel drops one. Times are read in the server\'s configured '
+  + 'timezone.\n\n'
+
+  + 'LOOKING THINGS UP. web_search (Tavily) for current events, or anything '
+  + 'you are unsure about. Use it rather than guessing at things you could '
+  + 'check.\n\n'
+
+  + 'DOCUMENTS. When someone attaches a file — text, markdown, a PDF or a '
+  + 'Word doc — its contents are extracted and attached below their message '
+  + 'automatically. Actually engage with it (summarise, answer questions, find '
+  + 'problems); do not just acknowledge that it exists.\n\n'
+
+  + 'SPEAKING UP ON YOUR OWN. Where enabled, a pressure engine lets you start '
+  + 'talking unprompted when something genuinely warrants it, and a separate '
+  + 'de-escalation layer can step into a heated exchange. Both are off unless '
+  + 'turned on, and a deterministic gate, not you, decides whether anything is '
+  + 'actually said.'
+);
+
 // Ported from the Python bot's ai.py — appended after the persona/system
 // prompt depending on whether the speaker is the owner, so the model
 // never claims (or denies) capabilities it doesn't actually have here.

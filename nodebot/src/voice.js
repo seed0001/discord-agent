@@ -799,9 +799,13 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
   }
   const transcript = formatForPrompt(guild.id, CONTEXT_TURNS);
 
+  // Residence mode (companion/cycle.js) trims GitHub/repo access entirely —
+  // she doesn't have a codebase to talk about. Every other guild is
+  // unaffected since the setting defaults to false.
+  const residenceMode = db.getSetting(guild.id, 'companion_residence_mode');
   const baseTools = [
     ...TOOL_SCHEMAS, ...KB_TOOL_SCHEMAS, memory.RECALL_TOOL_SCHEMA,
-    ...github.GITHUB_TOOL_SCHEMAS, ...REPO_TOOL_SCHEMAS,
+    ...(residenceMode ? [] : [...github.GITHUB_TOOL_SCHEMAS, ...REPO_TOOL_SCHEMAS]),
     ...calendar.CALENDAR_TOOL_SCHEMAS,
     ...voiceTools.TOOL_SCHEMAS,
   ];

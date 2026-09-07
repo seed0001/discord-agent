@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import * as db from '../../src/db.js';
 import { inQuietHours } from '../../src/companion/scheduler.js';
+import * as drivesMod from '../../src/companion/drives.js';
 
 function withDb(fn) {
   return async () => {
@@ -73,4 +74,23 @@ test('respects the per-guild calendar_timezone, not just UTC', withDb(() => {
   assert.equal(inQuietHours('g1', AT(11, 30)), true);
   // 12:30 America/Chicago == 18:30 UTC — outside the window locally.
   assert.equal(inQuietHours('g1', AT(18, 30)), false);
+}));
+
+// -- residence mode: her own drive-driven sleep phase layers on top --------
+
+test('residence mode: her sleep phase is quiet hours even with no manual window configured', withDb(() => {
+  db.setSetting('g1', 'companion_residence_mode', true);
+  drivesMod.forcePhase('g1', 'sleep', NOON);
+  assert.equal(inQuietHours('g1', NOON + 60), true);
+}));
+
+test('residence mode: awake phases are not quiet on their own', withDb(() => {
+  db.setSetting('g1', 'companion_residence_mode', true);
+  drivesMod.forcePhase('g1', 'work', NOON);
+  assert.equal(inQuietHours('g1', NOON + 60), false);
+}));
+
+test('residence mode off: her drive state is never consulted, only the manual window', withDb(() => {
+  drivesMod.forcePhase('g1', 'sleep', NOON); // companion_residence_mode left false
+  assert.equal(inQuietHours('g1', NOON + 60), false);
 }));
