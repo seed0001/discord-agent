@@ -224,6 +224,9 @@ export async function buildImageParts(message) {
 
 export const MAX_AUDIO_BYTES = 15 * 1024 * 1024; // Discord's own default upload cap
 
+// Extension fallback only — for when Discord hands back no contentType at
+// all. A handful of common containers; anything else with a real audio/*
+// contentType is still trusted below regardless of extension.
 const AUDIO_EXTENSION_TYPES = {
   mp3: 'audio/mpeg',
   wav: 'audio/wav',
@@ -235,17 +238,20 @@ const AUDIO_EXTENSION_TYPES = {
   webm: 'audio/webm',
   aac: 'audio/aac',
 };
-const AUDIO_MEDIA_TYPES = new Set(Object.values(AUDIO_EXTENSION_TYPES));
 
 /**
  * The media type to save this attachment as, or null if it isn't an audio
- * file the music library can store. Same declared-type-first convention as
- * imageMediaType.
+ * file the music library can store. Trusts ANY declared audio/* contentType
+ * — exports from things like Suno land with all sorts of subtypes
+ * (audio/x-wav, audio/mp4a-latm, codec params tacked on, ...) and rejecting
+ * an audio file Discord itself already identified just because it isn't in
+ * some hand-picked list is the wrong failure mode. The extension map is only
+ * a fallback for when Discord reports no contentType at all.
  */
 export function audioMediaType(attachment) {
   const filename = attachment.name || attachment.filename || '';
   const contentType = attachment.contentType || attachment.content_type || '';
   const declared = contentType.split(';')[0].trim().toLowerCase();
-  if (declared) return AUDIO_MEDIA_TYPES.has(declared) ? declared : null;
+  if (declared) return declared.startsWith('audio/') ? declared : null;
   return AUDIO_EXTENSION_TYPES[ext(filename)] || null;
 }

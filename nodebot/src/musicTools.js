@@ -155,7 +155,17 @@ function clearPending(guildId, userId) {
 export async function noteUploadedAudio(message) {
   const attachments = [...(message.attachments?.values?.() ?? message.attachments ?? [])];
   const attachment = attachments.find((a) => audioMediaType(a));
-  if (!attachment) return '';
+  if (!attachment) {
+    // Not silent when there WERE attachments but none read as audio — this is
+    // exactly the case someone reports as "I attached it and he didn't see
+    // it," and without this line there's no way to tell a real miss (wrong
+    // contentType, an extension we don't recognise) from a text-only message.
+    if (attachments.length) {
+      const described = attachments.map((a) => `${a.name || a.filename || '?'} (${a.contentType || a.content_type || 'no contentType'})`).join(', ');
+      console.warn('[musicTools] message had attachment(s) but none read as audio:', described);
+    }
+    return '';
+  }
   const filename = attachment.name || attachment.filename || 'audio file';
   if (attachment.size > MAX_AUDIO_BYTES) {
     return `[${filename} is ${Math.floor(attachment.size / 1024)}KB — too large to save to the music `

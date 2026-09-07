@@ -457,6 +457,32 @@ test('noteUploadedAudio ignores non-audio attachments', withDb(async () => {
   assert.equal(note, '');
 }));
 
+test('noteUploadedAudio trusts any declared audio/* contentType, not just the curated list', withDb(async () => {
+  // Real-world exports (Suno and friends) show up with all kinds of audio/*
+  // subtypes Discord itself already identified — rejecting those because
+  // they aren't in some hand-picked set was the actual bug being fixed here.
+  const message = fakeMessage(OWNER, {
+    attachments: [fakeAttachment({ name: 'export.bin', contentType: 'audio/x-wav; codecs=1' })],
+  });
+  const note = await musicTools.noteUploadedAudio(message);
+  assert.match(note, /attached audio: export\.bin/);
+}));
+
+test('noteUploadedAudio without any audio match logs what was actually attached', withDb(async () => {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    await musicTools.noteUploadedAudio(fakeMessage(OWNER, {
+      attachments: [{ name: 'weird.xyz', contentType: 'application/octet-stream', size: 5, read: async () => Buffer.alloc(0) }],
+    }));
+  } finally {
+    console.warn = original;
+  }
+  assert.ok(warnings.some((w) => w.includes('weird.xyz') && w.includes('application/octet-stream')),
+    'expected a diagnostic log naming the unmatched attachment');
+}));
+
 test('noteUploadedAudio caches an audio attachment and save_song stores it', withDb(async () => {
   const message = fakeMessage(OWNER, { attachments: [fakeAttachment({ name: 'my_song.mp3' })] });
   const note = await musicTools.noteUploadedAudio(message);
