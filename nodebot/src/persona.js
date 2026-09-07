@@ -224,7 +224,18 @@ export const MUSIC_NOTE = (
   + "'server', or 'mine'). Both need you already in a voice channel. "
   + 'stop_music stops playback and drops back to plain listening — call it '
   + 'whenever someone wants the music to stop or wants to talk, and before '
-  + 'starting something new if music is already going.'
+  + 'starting something new if music is already going.\n\n'
+
+  + 'MUSIC VIDEOS. generate_music_video turns a song YOU generated into a '
+  + 'lyric video: illustrated stills for each part of the song, playing in '
+  + 'order while the song itself plays as the soundtrack. Name a saved song, '
+  + 'or leave it blank for whatever you just made. It only works on songs you '
+  + 'wrote yourself (never an upload — you do not know its lyrics), and the '
+  + 'images are synced to even time-slices across the song rather than exact '
+  + 'lyric timing, so do not oversell precision you do not have. This also '
+  + "needs image/video generation turned on for this server (same requirement "
+  + 'generate_video has) on top of music access — if that is off, say so '
+  + 'plainly rather than trying and coming back with an error.'
 );
 
 // Gated on the channel-brains sidecar being configured (channelBrains.js

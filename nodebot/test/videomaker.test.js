@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
-import { createVideo, extractJson, extensionFor, VideoMakerError } from '../src/videomaker.js';
+import { createVideo, createMusicVideo, extractJson, extensionFor, VideoMakerError } from '../src/videomaker.js';
 
 function jsonResponse(body, status = 200) {
   return { ok: status < 400, status, text: async () => JSON.stringify(body) };
@@ -248,6 +248,168 @@ test('onStatus reports each stage in order, ending near 100% before the final re
   assert.deepEqual(seen, ['script', 'images', 'narration', 'assemble']);
   assert.ok(stages.every((s) => s.progress >= 0 && s.progress <= 1));
   // progress is monotonically non-decreasing across the whole run
+  for (let i = 1; i < stages.length; i += 1) {
+    assert.ok(stages[i].progress >= stages[i - 1].progress, `progress went backwards at index ${i}`);
+  }
+  assert.equal(stages.at(-1).stage, 'assemble');
+  assert.ok(stages.at(-1).stageProgress >= 0.99);
+});
+
+// ===========================================================================
+// createMusicVideo
+// ===========================================================================
+//
+// Same script -> images -> assemble shape as createVideo, but there's no
+// narration/TTS step: the script only writes image_prompts (from the song's
+// own generation prompt, which is where its lyrics live), and the "per-scene
+// audio" assembleVideo consumes comes from slicing the song itself into
+// equal-length pieces (probeDurationFn stands in for ffprobe, same "test seam,
+// production never touches it" shape as runFfmpegFn).
+
+const MV_SCENES = (n) => Array.from({ length: n }, (_, i) => ({ image_prompt: `a picture for scene ${i + 1}` }));
+
+function musicScriptResponse({ scenes = MV_SCENES(3), cost = 0.01, title = 'A Music Video' } = {}) {
+  return jsonResponse({
+    choices: [{ message: { content: JSON.stringify({
+      title, description: 'a description', tags: ['a', 'b'], scenes,
+    }) } }],
+    usage: { cost },
+  });
+}
+
+function fakeProbe(duration = 30) {
+  const calls = [];
+  const fn = async (filePath) => { calls.push(filePath); return duration; };
+  return { fn, calls };
+}
+
+function testSong(overrides = {}) {
+  return {
+    title: 'Test Song',
+    prompt: 'a chill lofi beat, lyrics: rain on the window, quiet nights, waiting for the morning light',
+    data: Buffer.from('SONGBYTES'),
+    mediaType: 'audio/mpeg',
+    ...overrides,
+  };
+}
+
+function baseMusicVideoDeps(overrides = {}) {
+  const fetch_ = overrides.fetch ?? fakeFetch(musicScriptResponse());
+  const images = overrides.images ?? fakeImages();
+  const ffmpeg = overrides.ffmpeg ?? fakeFfmpeg();
+  const probe = overrides.probe ?? fakeProbe();
+  return {
+    deps: {
+      fetchFn: fetch_.fn, generateImageFn: images.fn, runFfmpegFn: ffmpeg.fn, probeDurationFn: probe.fn,
+    },
+    calls: {
+      fetch: fetch_.calls, images: images.calls, ffmpeg: ffmpeg.calls, probe: probe.calls,
+    },
+  };
+}
+
+test('a song with no audio is rejected before any request goes out', async () => {
+  const { deps, calls } = baseMusicVideoDeps();
+  await assert.rejects(createMusicVideo({}, { deps }), /generated song is required/);
+  assert.equal(calls.fetch.length, 0, 'a missing song must not cost a request');
+});
+
+test('a song with no generation prompt is rejected — that is what carries the lyrics', async () => {
+  const { deps, calls } = baseMusicVideoDeps();
+  await assert.rejects(
+    createMusicVideo(testSong({ prompt: '' }), { deps }),
+    /generation prompt is required/,
+  );
+  assert.equal(calls.fetch.length, 0);
+});
+
+test('the full pipeline runs script -> images -> slice -> assemble and returns a real mp4 buffer', async () => {
+  const { deps, calls } = baseMusicVideoDeps();
+  const clip = await createMusicVideo(testSong(), { deps });
+
+  assert.ok(Buffer.isBuffer(clip.data));
+  assert.equal(clip.data.toString(), 'FAKE_MP4');
+  assert.equal(clip.contentType, 'video/mp4');
+  assert.equal(clip.title, 'A Music Video');
+  assert.equal(clip.sceneCount, 3);
+
+  assert.equal(calls.fetch.length, 1, 'one script request');
+  assert.match(calls.fetch[0].body.messages[1].content, /Test Song/);
+  assert.match(calls.fetch[0].body.messages[1].content, /rain on the window/);
+  assert.equal(calls.images.length, 3, 'one image request per scene');
+  assert.equal(calls.probe.length, 1, 'the song is probed for duration once, not per scene');
+  // one ffmpeg slice per scene, one per-scene encode per scene, plus one final concat
+  assert.equal(calls.ffmpeg.length, 3 + 3 + 1);
+});
+
+test('notes are appended to the script request when given, omitted when not', async () => {
+  const { deps, calls } = baseMusicVideoDeps();
+  await createMusicVideo(testSong(), { deps, notes: 'make it moody' });
+  assert.match(calls.fetch[0].body.messages[1].content, /Extra guidance: make it moody/);
+
+  const second = baseMusicVideoDeps();
+  await createMusicVideo(testSong(), { deps: second.deps });
+  assert.doesNotMatch(second.calls.fetch[0].body.messages[1].content, /Extra guidance/);
+});
+
+test('imageModel and scriptModel overrides are forwarded to the respective calls', async () => {
+  const { deps, calls } = baseMusicVideoDeps();
+  await createMusicVideo(testSong(), { deps, imageModel: 'some/image-model', scriptModel: 'some/script-model' });
+  assert.equal(calls.fetch[0].body.model, 'some/script-model');
+  assert.ok(calls.images.every((c) => c.opts.model === 'some/image-model'));
+});
+
+test('the song is sliced into as many equal-length pieces as there are scenes', async () => {
+  const { deps, calls } = baseMusicVideoDeps({
+    fetch: fakeFetch(musicScriptResponse({ scenes: MV_SCENES(5) })),
+    probe: fakeProbe(50),
+  });
+  await createMusicVideo(testSong(), { deps });
+  // 5 slice cuts + 5 per-scene encodes + 1 final concat
+  assert.equal(calls.ffmpeg.length, 5 + 5 + 1);
+  const sliceCalls = calls.ffmpeg.filter((args) => args.includes('-ss'));
+  assert.equal(sliceCalls.length, 5);
+  // 50s / 5 scenes = 10s each; the first four are exactly segDuration, the
+  // last one takes whatever remains so float rounding never clips the tail
+  const starts = sliceCalls.map((args) => Number(args[args.indexOf('-ss') + 1]));
+  assert.deepEqual(starts, [0, 10, 20, 30, 40]);
+});
+
+test('a non-OK script response surfaces the upstream error message', async () => {
+  const { deps } = baseMusicVideoDeps({
+    fetch: fakeFetch(jsonResponse({ error: { message: 'model not found' } }, 404)),
+  });
+  await assert.rejects(
+    createMusicVideo(testSong(), { deps }),
+    (err) => err instanceof VideoMakerError && /404/.test(err.message) && /model not found/.test(err.message),
+  );
+});
+
+test('a script with zero scenes is rejected', async () => {
+  const { deps } = baseMusicVideoDeps({ fetch: fakeFetch(musicScriptResponse({ scenes: [] })) });
+  await assert.rejects(createMusicVideo(testSong(), { deps }), /zero scenes/);
+});
+
+test('a scene missing an image prompt is rejected', async () => {
+  const { deps } = baseMusicVideoDeps({
+    fetch: fakeFetch(musicScriptResponse({ scenes: [{}] })),
+  });
+  await assert.rejects(createMusicVideo(testSong(), { deps }), /scene 1/);
+});
+
+test('a slicing failure propagates as a VideoMakerError', async () => {
+  const probe = { calls: [], fn: async () => { throw new VideoMakerError('ffprobe failed: boom'); } };
+  const { deps } = baseMusicVideoDeps({ probe });
+  await assert.rejects(createMusicVideo(testSong(), { deps }), /ffprobe failed/);
+});
+
+test('onStatus reports script/images/slicing/assemble in order, ending near 100%', async () => {
+  const { deps } = baseMusicVideoDeps();
+  const stages = [];
+  await createMusicVideo(testSong(), { deps, onStatus: async (info) => stages.push({ ...info }) });
+  const seen = [...new Set(stages.map((s) => s.stage))];
+  assert.deepEqual(seen, ['script', 'images', 'slicing', 'assemble']);
+  assert.ok(stages.every((s) => s.progress >= 0 && s.progress <= 1));
   for (let i = 1; i < stages.length; i += 1) {
     assert.ok(stages[i].progress >= stages[i - 1].progress, `progress went backwards at index ${i}`);
   }

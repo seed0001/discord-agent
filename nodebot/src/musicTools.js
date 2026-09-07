@@ -25,6 +25,7 @@
 import { PermissionsBitField } from 'discord.js';
 import * as db from './db.js';
 import * as music from './music.js';
+import * as videomaker from './videomaker.js';
 import * as credits from './credits/index.js';
 import { musicKind } from './credits/rates.js';
 import {
@@ -32,7 +33,9 @@ import {
 } from './musicRoles.js';
 import { resolveLevel, memberFacts, levelAtLeast } from './web/roles.js';
 import { OWNER_ID } from './config.js';
-import { uploadLimit, tooLarge, postedNote } from './mediaTools.js';
+import {
+  uploadLimit, tooLarge, postedNote, allowed as mediaAllowed, takeVideoSlot,
+} from './mediaTools.js';
 import { audioMediaType, readAttachment, MAX_AUDIO_BYTES } from './documents.js';
 
 export class ToolError extends Error {}
@@ -448,6 +451,102 @@ async function playPlaylistHandler(client, message, args) {
   return `Started the playlist — ${songs.length} song(s), starting with "${songs[0].title}".`;
 }
 
+// -- music videos -------------------------------------------------------------
+
+const MUSIC_VIDEO_STAGE_LABELS = {
+  script: 'Planning the shot list',
+  images: 'Illustrating scenes',
+  slicing: 'Cutting the song into scenes',
+  assemble: 'Rendering the final video',
+};
+
+function musicVideoStatusLine(info) {
+  const label = MUSIC_VIDEO_STAGE_LABELS[info.stage] || info.stage;
+  const pct = Math.round((info.progress || 0) * 100);
+  const cost = info.costUsd ? ` — $${info.costUsd.toFixed(4)} so far` : '';
+  return `Generating music video: ${label} (${pct}%)${cost}`;
+}
+
+async function generateMusicVideoHandler(client, message, args, access, ownerId) {
+  if (!(await mediaAllowed(message, ownerId))) {
+    throw new ToolError('image and video generation is disabled in this server, or limited to the bot '
+      + 'owner — a music video needs both music access and media/video access.');
+  }
+  const guildId = message.guild.id;
+  takeVideoSlot(guildId, Number(db.getSetting(guildId, 'media_video_hourly_cap')) || 0);
+
+  const query = String(args.song || '').trim();
+  let song;
+  if (query) {
+    const row = db.findSong(guildId, query, await playableScope(message));
+    if (!row) {
+      throw new ToolError(`no single song matches "${query}" in their library, the server library, or `
+        + 'the shared libraries of people here — use list_songs for exact titles.');
+    }
+    song = db.getSongForVideo(guildId, row.id);
+  } else {
+    const pending = pendingSong(guildId, message.author.id);
+    if (!pending) {
+      throw new ToolError('no song was named and nothing was generated recently — name a saved song, '
+        + 'or call generate_music first.');
+    }
+    song = {
+      title: 'the song I just made', data: pending.data, mediaType: pending.mediaType, prompt: pending.prompt,
+    };
+  }
+  if (!song?.prompt || /^\[uploaded:/.test(song.prompt)) {
+    throw new ToolError('music videos only work for songs Max generated himself, since that is how he '
+      + 'knows the lyrics and style to illustrate — not uploaded audio. Call generate_music first.');
+  }
+
+  let notice = null;
+  try {
+    notice = await message.channel.send('Starting the music video: planning the shot list — this '
+      + "typically takes a few minutes, I'll keep this updated.");
+  } catch (err) {
+    console.warn('[musicTools] could not post the music video notice:', err.message);
+  }
+  const updateNotice = async (info) => {
+    if (!notice) return;
+    try {
+      await notice.edit(musicVideoStatusLine(info));
+    } catch (err) {
+      console.warn('[musicTools] could not update the music video notice:', err.message);
+    }
+  };
+
+  try {
+    let clip;
+    try {
+      clip = await videomaker.createMusicVideo(song, {
+        notes: args.notes,
+        imageModel: db.getSetting(guildId, 'media_image_model') || undefined,
+        onStatus: updateNotice,
+      });
+    } catch (err) {
+      if (err instanceof videomaker.VideoMakerError) throw new ToolError(err.message);
+      throw err;
+    }
+
+    const limit = uploadLimit(message.guild);
+    if (clip.data.length > limit) {
+      return tooLarge(clip.data.length, limit, 'ask for a shorter song, or a video with fewer scenes');
+    }
+    const filename = String(clip.title || song.title || 'music_video')
+      .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'music_video';
+    await message.channel.send({ files: [{ attachment: clip.data, name: `${filename}.mp4` }] });
+    const cost = clip.costUsd
+      ? ` It cost $${clip.costUsd.toFixed(4)} to make (illustrations via OpenRouter — you may mention `
+        + 'this if asked).'
+      : '';
+    return `${postedNote(1, 'music video')}${cost}`;
+  } finally {
+    if (notice) {
+      await notice.delete().catch(() => { /* already gone, or no permission */ });
+    }
+  }
+}
+
 async function stopMusicHandler(client, message) {
   const voice = await getVoice();
   const stopped = voice.stopMusic(message.guild);
@@ -554,6 +653,22 @@ export const TOOLS = {
     + "asker's own. Call stop_music first if something is already playing.",
     { scope: str("'all' (default), 'server', or 'mine'.") }, []), playPlaylistHandler],
 
+  generate_music_video: [schema('generate_music_video',
+    "Make a lyric video for a song Max generated himself: a sequence of illustrated stills, one per "
+    + 'section of the song (intro/verse/chorus/etc), playing in order while the song itself plays as '
+    + 'the soundtrack — there is no separate narration. Only works for songs Max wrote himself, not '
+    + 'uploaded audio, since only then does he know the lyrics/style to illustrate. Takes several '
+    + 'minutes and costs real money (illustrations + rendering, on top of whatever the song itself '
+    + 'cost), so only call this when someone actually asks for a video of a song. Images are synced to '
+    + "even time-slices across the song, not exact lyric timing — that's expected for now. Leave `song` "
+    + 'blank to use whatever was just generated and is still pending.',
+    {
+      song: str('The title of a saved song to make a video for. Leave blank for the most recently '
+        + 'generated one.'),
+      notes: str('Optional extra guidance for the shot list: visual style, era, setting, mood. Leave '
+        + 'blank unless the user said something beyond wanting a video.'),
+    }, []), generateMusicVideoHandler],
+
   stop_music: [schema('stop_music',
     'Stop whatever song or playlist is playing in voice and go back to plain listening. Use it any '
     + 'time someone asks to stop the music, pause it, or wants to talk instead.',
@@ -599,10 +714,11 @@ export async function execute(client, message, name, args, ownerId) {
   }
 
   try {
-    return await entry[1](client, message, args || {}, access);
+    return await entry[1](client, message, args || {}, access, ownerId);
   } catch (err) {
     if (err instanceof ToolError) return `Error: ${err.message}`;
     if (err instanceof music.MusicError) return `Error: ${err.message}`;
+    if (err instanceof videomaker.VideoMakerError) return `Error: ${err.message}`;
     if (err instanceof credits.InsufficientCreditsError) {
       return 'Error: this server is out of credits — the balance can be topped up from the dashboard.';
     }

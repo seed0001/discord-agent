@@ -13,6 +13,7 @@ import { PermissionsBitField } from 'discord.js';
 import * as db from '../src/db.js';
 import * as music from '../src/music.js';
 import * as musicTools from '../src/musicTools.js';
+import * as mediaTools from '../src/mediaTools.js';
 
 const OWNER = 'owner-1';
 
@@ -155,9 +156,11 @@ function withDb(fn) {
     // The "song I just made" cache is module-level — without this reset a
     // generate_music left pending by an earlier test leaks into the next.
     musicTools._resetForTests();
+    mediaTools._videoCalls.clear(); // shared with generate_music_video's hourly breaker
     try {
       await fn();
     } finally {
+      mediaTools._videoCalls.clear();
       db.closeDb();
       rmSync(dir, { recursive: true, force: true });
     }
@@ -760,4 +763,93 @@ test('library tools are refused for someone with no music access', withDb(async 
   const result = await musicTools.execute(null, message, 'list_songs', {}, OWNER);
   assert.match(result, /^Error:/);
   assert.match(result, /limited to roles the server has granted/);
+}));
+
+// -- music videos --------------------------------------------------------
+//
+// generate_music_video's own script/image/slicing/assembly logic lives in
+// videomaker.js and is covered end-to-end there with injectable fakes. What's
+// left to test here is what this file is actually responsible for: that it
+// needs BOTH music access and media/video access, that it only works on a
+// song Max generated himself (not an upload — that's the only case with a
+// known lyrics/style prompt to illustrate), the hourly video-slot breaker it
+// shares with generate_video, and the Discord-side wiring (notice posted,
+// then cleaned up either way) — exercised through a real script-generation
+// failure, the one stage reachable through the fetch fake before anything
+// touches image generation or ffmpeg.
+
+test('generate_music_video requires media/video access on top of music access', withDb(async () => {
+  db.setSetting('1', 'music_roles', ['dj']); // music access, but media_enabled defaults false
+  const message = fakeMessage('m1', { roleIds: ['dj'] });
+  const result = await musicTools.execute(null, message, 'generate_music_video', {}, OWNER);
+  assert.match(result, /^Error:/);
+  assert.match(result, /media\/video access/);
+}));
+
+test('generate_music_video with no song named and nothing pending is a clear error', withDb(async () => {
+  db.setSetting('1', 'media_enabled', true);
+  db.setSetting('1', 'media_access', 'everyone');
+  const result = await musicTools.execute(null, fakeMessage(OWNER), 'generate_music_video', {}, OWNER);
+  assert.match(result, /^Error:/);
+  assert.match(result, /nothing was generated recently/);
+}));
+
+test('generate_music_video refuses an unmatched song title', withDb(async () => {
+  db.setSetting('1', 'media_enabled', true);
+  db.setSetting('1', 'media_access', 'everyone');
+  const result = await musicTools.execute(
+    null, fakeMessage(OWNER), 'generate_music_video', { song: 'Nope' }, OWNER,
+  );
+  assert.match(result, /^Error:/);
+  assert.match(result, /no single song matches/);
+}));
+
+test('generate_music_video refuses a saved uploaded track — no known lyrics to illustrate', withDb(async () => {
+  db.setSetting('1', 'media_enabled', true);
+  db.setSetting('1', 'media_access', 'everyone');
+  db.addSong('1', {
+    title: 'My Upload',
+    prompt: '[uploaded: my_upload.mp3]',
+    data: Buffer.from('AUDIO'),
+    mediaType: 'audio/mpeg',
+    length: 'upload',
+    costUsd: null,
+    ownerId: OWNER,
+    createdBy: OWNER,
+  });
+  const result = await musicTools.execute(
+    null, fakeMessage(OWNER), 'generate_music_video', { song: 'My Upload' }, OWNER,
+  );
+  assert.match(result, /^Error:/);
+  assert.match(result, /generated himself/);
+}));
+
+test('generate_music_video honors the same hourly video cap as generate_video', withDb(async () => {
+  db.setSetting('1', 'media_enabled', true);
+  db.setSetting('1', 'media_access', 'everyone');
+  db.setSetting('1', 'media_video_hourly_cap', 1);
+  mediaTools.takeVideoSlot('1', 1); // consume the one slot directly
+  const result = await musicTools.execute(null, fakeMessage(OWNER), 'generate_music_video', {}, OWNER);
+  assert.match(result, /^Error:/);
+  assert.match(result, /cap/);
+}));
+
+test('the status notice is posted, then cleaned up, when the music video script fails', withDb(async () => {
+  db.setSetting('1', 'media_enabled', true);
+  db.setSetting('1', 'media_access', 'everyone');
+  seedSong('1', 'Rainy Day', { ownerId: OWNER });
+  await withFetch(
+    async () => errorResponse({ error: { message: 'model unavailable' } }, 503),
+    async () => {
+      const message = fakeMessage(OWNER);
+      const result = await musicTools.execute(
+        null, message, 'generate_music_video', { song: 'Rainy Day' }, OWNER,
+      );
+      assert.match(result, /^Error:/);
+      assert.match(result, /model unavailable/);
+      assert.equal(message._sent.length, 1, 'only the status notice, no clip');
+      assert.match(String(message._sent[0]), /planning the shot list/);
+      assert.deepEqual(message._deleted, ['msg-1'], 'the notice must not be left behind on failure');
+    },
+  );
 }));

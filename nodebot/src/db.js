@@ -789,6 +789,21 @@ export function getSongData(guildId, id) {
   return { id: row.id, title: row.title, data: Buffer.from(row.data), mediaType: row.media_type };
 }
 
+/** One song's audio plus its generation prompt and length/kind — everything
+ *  the music-video pipeline needs beyond what getSongData returns (it also
+ *  needs the original prompt, since that's what carries a generated song's
+ *  lyrics — see videomaker.js's createMusicVideo). */
+export function getSongForVideo(guildId, id) {
+  const row = db.prepare(
+    'SELECT id, title, data, media_type, prompt, length FROM songs WHERE guild_id = ? AND id = ?',
+  ).get(String(guildId), Number(id));
+  if (!row) return null;
+  return {
+    id: row.id, title: row.title, data: Buffer.from(row.data), mediaType: row.media_type,
+    prompt: row.prompt, length: row.length,
+  };
+}
+
 /** Metadata for one song (no blob), including who owns and made it — for
  * ownership checks before a delete or a move. */
 export function getSong(guildId, id) {
