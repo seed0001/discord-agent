@@ -99,8 +99,9 @@ async function extractDocx(data) {
 }
 
 /** discord.js Attachments expose a URL, not the bytes — fetch them. Tests
- * pass a fake with its own read() so nothing touches the network. */
-async function readAttachment(attachment) {
+ * pass a fake with its own read() so nothing touches the network. Exported
+ * for musicTools.js, which downloads uploaded audio the same way. */
+export async function readAttachment(attachment) {
   if (typeof attachment.read === 'function') return attachment.read();
   const resp = await fetch(attachment.url);
   if (!resp.ok) throw new Error(`attachment fetch failed: ${resp.status}`);
@@ -212,4 +213,39 @@ export async function buildImageParts(message) {
     notes.push(`[${skipped} more image(s) not shown — max ${MAX_IMAGES} per message]`);
   }
   return { parts, notes };
+}
+
+// -- audio ---------------------------------------------------------------
+// A member can paste a song straight into chat instead of generating one.
+// Unlike documents/images above this doesn't feed the model any content —
+// audio can't be read as text or seen — musicTools.js just needs to know one
+// was attached so save_song has something to store. See noteUploadedAudio
+// there for the download + caching step.
+
+export const MAX_AUDIO_BYTES = 15 * 1024 * 1024; // Discord's own default upload cap
+
+const AUDIO_EXTENSION_TYPES = {
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  oga: 'audio/ogg',
+  m4a: 'audio/mp4',
+  flac: 'audio/flac',
+  opus: 'audio/opus',
+  webm: 'audio/webm',
+  aac: 'audio/aac',
+};
+const AUDIO_MEDIA_TYPES = new Set(Object.values(AUDIO_EXTENSION_TYPES));
+
+/**
+ * The media type to save this attachment as, or null if it isn't an audio
+ * file the music library can store. Same declared-type-first convention as
+ * imageMediaType.
+ */
+export function audioMediaType(attachment) {
+  const filename = attachment.name || attachment.filename || '';
+  const contentType = attachment.contentType || attachment.content_type || '';
+  const declared = contentType.split(';')[0].trim().toLowerCase();
+  if (declared) return AUDIO_MEDIA_TYPES.has(declared) ? declared : null;
+  return AUDIO_EXTENSION_TYPES[ext(filename)] || null;
 }

@@ -33,6 +33,7 @@ import {
 import { resolveLevel, memberFacts, levelAtLeast } from './web/roles.js';
 import { OWNER_ID } from './config.js';
 import { uploadLimit, tooLarge, postedNote } from './mediaTools.js';
+import { audioMediaType, readAttachment, MAX_AUDIO_BYTES } from './documents.js';
 
 export class ToolError extends Error {}
 
@@ -116,29 +117,62 @@ async function getVoice() {
 /** Test seam: point playback calls at a fake instead of the real voice.js. */
 export function _setVoiceModuleForTests(mod) { voiceModule = mod; }
 
-/** Test seam: drop the "song I just made" cache. */
-export function _resetForTests() { lastGenerated.clear(); }
+/** Test seam: drop the "song I just made / just uploaded" cache. */
+export function _resetForTests() { pendingClips.clear(); }
 
-// -- "the song I just made" ---------------------------------------------------
-// A generated clip isn't saved automatically — that's a decision someone
-// makes after hearing it. generateSong stashes the raw clip here, keyed by
-// guild AND user (two people generating in one server must not clobber each
-// other's take), and save_song / play_song with no song named reach for it.
-// The TTL keeps a save_song called long after the fact from silently
-// persisting a stale, forgotten take.
+// -- "the song I just made, or just uploaded" --------------------------------
+// Neither a generated clip nor an uploaded attachment is saved automatically
+// — that's a decision someone makes after hearing it. generateSong and
+// noteUploadedAudio both stash the raw clip here, keyed by guild AND user
+// (two people acting in one server must not clobber each other's take), and
+// save_song / play_song with no song named reach for it. The TTL keeps a
+// save_song called long after the fact from silently persisting a stale,
+// forgotten take.
 const LAST_SONG_TTL_MS = 15 * 60 * 1000;
-const lastGenerated = new Map(); // `${guildId}:${userId}` -> { data, mediaType, prompt, length, costUsd, at }
+// `${guildId}:${userId}` -> { kind: 'generated'|'upload', data, mediaType,
+//   prompt, length, costUsd, filename, at }
+const pendingClips = new Map();
 
 const pendingKey = (guildId, userId) => `${guildId}:${userId}`;
 
 function pendingSong(guildId, userId) {
-  const entry = lastGenerated.get(pendingKey(guildId, userId));
+  const entry = pendingClips.get(pendingKey(guildId, userId));
   if (!entry || Date.now() - entry.at > LAST_SONG_TTL_MS) return null;
   return entry;
 }
 
 function clearPending(guildId, userId) {
-  lastGenerated.delete(pendingKey(guildId, userId));
+  pendingClips.delete(pendingKey(guildId, userId));
+}
+
+/** A member can paste a song straight into chat instead of generating one.
+ * Downloads the first audio attachment on this message (if any) and stashes
+ * it as their pending clip, same slot generateSong uses — so save_song or
+ * play_song works on it immediately, or on a later message while it's still
+ * fresh. Returns a note to fold into the model's context (what was attached,
+ * or why it couldn't be used), or '' when the message has no audio attached.
+ * Never throws — a bad download shouldn't take down message handling. */
+export async function noteUploadedAudio(message) {
+  const attachments = [...(message.attachments?.values?.() ?? message.attachments ?? [])];
+  const attachment = attachments.find((a) => audioMediaType(a));
+  if (!attachment) return '';
+  const filename = attachment.name || attachment.filename || 'audio file';
+  if (attachment.size > MAX_AUDIO_BYTES) {
+    return `[${filename} is ${Math.floor(attachment.size / 1024)}KB — too large to save to the music `
+      + `library (max ${Math.floor(MAX_AUDIO_BYTES / (1024 * 1024))}MB)]`;
+  }
+  let data;
+  try {
+    data = await readAttachment(attachment);
+  } catch (err) {
+    console.warn('[musicTools] could not download uploaded audio:', err?.message || err);
+    return `[Couldn't download ${filename}]`;
+  }
+  pendingClips.set(pendingKey(message.guild.id, message.author.id), {
+    kind: 'upload', data, mediaType: audioMediaType(attachment), filename, at: Date.now(),
+  });
+  return `[attached audio: ${filename} — call save_song with a title to add it to the music library, `
+    + 'or play_song to play it now]';
 }
 
 // -- library scope helpers --------------------------------------------------
@@ -257,8 +291,8 @@ async function generateSong(client, message, args) {
       meta: { length, costUsd: clip.costUsd ?? null, by: String(message.author.id) },
     });
 
-    lastGenerated.set(pendingKey(message.guild.id, message.author.id), {
-      data: clip.data, mediaType: clip.mediaType, prompt, length, costUsd: clip.costUsd, at: Date.now(),
+    pendingClips.set(pendingKey(message.guild.id, message.author.id), {
+      kind: 'generated', data: clip.data, mediaType: clip.mediaType, prompt, length, costUsd: clip.costUsd, at: Date.now(),
     });
 
     const limit = uploadLimit(message.guild);
@@ -280,7 +314,7 @@ async function generateSong(client, message, args) {
 // -- song library handlers ----------------------------------------------------
 
 function libraryLine(row, i, message, uid) {
-  const kind = row.length === 'full' ? 'full song' : 'clip';
+  const kind = row.length === 'full' ? 'full song' : row.length === 'upload' ? 'uploaded track' : 'clip';
   const where = ownerLabel(message, row.owner_id, uid);
   return `${i + 1}. ${row.title} (${kind}, ${where})`;
 }
@@ -295,8 +329,8 @@ async function saveSong(client, message, args, access) {
   }
   const pending = pendingSong(message.guild.id, message.author.id);
   if (!pending) {
-    throw new ToolError('there is no recently generated song to save — call generate_music first, '
-      + 'then save_song right after, while it is still fresh.');
+    throw new ToolError('there is no recently generated or uploaded song to save — call generate_music '
+      + 'first, or attach an audio file, then call save_song right after, while it is still fresh.');
   }
   const ownerId = toServer ? null : String(message.author.id);
   const cap = db.libraryCap(ownerId);
@@ -308,11 +342,11 @@ async function saveSong(client, message, args, access) {
   }
   db.addSong(message.guild.id, {
     title,
-    prompt: pending.prompt,
+    prompt: pending.kind === 'upload' ? `[uploaded: ${pending.filename}]` : pending.prompt,
     data: pending.data,
     mediaType: pending.mediaType,
-    length: pending.length,
-    costUsd: pending.costUsd,
+    length: pending.kind === 'upload' ? 'upload' : pending.length,
+    costUsd: pending.costUsd ?? null,
     ownerId,
     createdBy: message.author.id,
   });
@@ -470,12 +504,14 @@ export const TOOLS = {
     }, ['prompt']), generateSong],
 
   save_song: [schema('save_song',
-    'Save the most recently generated song so it can be replayed later without regenerating it. By '
-    + "default it goes to the asker's own personal library (holds "
+    'Save the most recently generated song, OR the most recently uploaded audio attachment (look for '
+    + '"[attached audio: ...]" in their message), so it can be replayed later without regenerating or '
+    + "re-uploading it. By default it goes to the asker's own personal library (holds "
     + `${db.SONG_LIBRARY_CAP}). Pass scope:'server' to put it in the shared server library instead `
     + `(holds ${db.SERVER_LIBRARY_CAP}) — only music curators, admins and the server owner may do `
-    + 'that. Only call this after generate_music, and only if the user said they want to keep it. If '
-    + 'the target library is full this tells you the current titles so you can ask which to remove.',
+    + 'that. Only call this after generate_music or an audio upload, and only if the user said they '
+    + 'want to keep it. If the target library is full this tells you the current titles so you can ask '
+    + 'which to remove.',
     {
       title: str('A short, memorable title for the song.'),
       scope: str("'personal' (default) for the asker's own library, or 'server' for the shared server library (curators only)."),
@@ -495,9 +531,10 @@ export const TOOLS = {
   play_song: [schema('play_song',
     "Play one song through the bot's current voice channel. Name a song by title — it's resolved "
     + "against the asker's library, the server library, and the shared libraries of people currently "
-    + 'in the channel — or leave it blank to play whatever generate_music just made, even if unsaved. '
-    + 'Requires the bot to already be in a voice channel; call stop_music first if something is playing.',
-    { song: str('The title of a song to play. Leave blank for the most recently generated one.') }, []),
+    + 'in the channel — or leave it blank to play whatever generate_music just made or was just '
+    + 'uploaded, even if unsaved. Requires the bot to already be in a voice channel; call stop_music '
+    + 'first if something is playing.',
+    { song: str('The title of a song to play. Leave blank for the most recently generated/uploaded one.') }, []),
   playSongHandler],
 
   play_playlist: [schema('play_playlist',

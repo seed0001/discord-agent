@@ -201,6 +201,9 @@ export const MUSIC_NOTE = (
   + '- Each member has their OWN personal library (up to 10 songs). save_song '
   + "saves the last generated track there by default — only after they say "
   + 'they want to keep it; ask for a short title first.\n'
+  + '- Someone can also just paste/upload an audio file instead of generating '
+  + 'one — if you see "[attached audio: ...]" in their message, save_song '
+  + 'works on it the same way: ask for a short title, then save it.\n'
   + '- There is ONE shared SERVER library (up to 30). save_song with '
   + "scope:'server' puts a track there instead — but only music curators, "
   + 'admins and the server owner may do that.\n'

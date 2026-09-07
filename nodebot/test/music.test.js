@@ -179,13 +179,14 @@ function fakeMember(id, { flags = [], roleIds = [] } = {}) {
  * the DJ-scope path can be exercised without a real @discordjs/voice
  * connection. */
 function fakeMessage(authorId, {
-  flags = [], roleIds = [], inGuild = true,
+  flags = [], roleIds = [], inGuild = true, attachments = [],
 } = {}) {
   const sent = [];
   const deleted = [];
   const member = inGuild ? fakeMember(authorId, { flags, roleIds }) : null;
   const membersCache = new Map(member ? [[authorId, member]] : []);
   return {
+    attachments,
     guild: {
       id: '1',
       roles: { cache: new Map() },
@@ -372,7 +373,7 @@ test('a blank prompt is a ToolError, surfaced as an Error string', withDb(async 
 test('save_song refuses when nothing was generated recently', withDb(async () => {
   const result = await musicTools.execute(null, fakeMessage(OWNER), 'save_song', { title: 'X' }, OWNER);
   assert.match(result, /^Error:/);
-  assert.match(result, /no recently generated song/);
+  assert.match(result, /no recently generated or uploaded song/);
 }));
 
 test('save_song needs a title', withDb(async () => {
@@ -431,6 +432,65 @@ test('save_song refuses once the personal library is full and names the titles',
   assert.match(result, /full \(10\/10\)/);
   assert.match(result, /Song 0/);
   assert.equal(db.countSongs('1', OWNER), db.SONG_LIBRARY_CAP);
+}));
+
+// -- uploaded audio ---------------------------------------------------------
+
+/** Stands in for a discord.js Attachment: read() supplies the bytes so
+ * noteUploadedAudio never touches the network, matching documents.js's own
+ * test seam for readAttachment. */
+function fakeAttachment({
+  name = 'track.mp3', contentType = 'audio/mpeg', size = 9, bytes = 'AUDIOBYT',
+} = {}) {
+  return { name, contentType, size, read: async () => Buffer.from(bytes) };
+}
+
+test('noteUploadedAudio is a no-op when the message has no audio attachment', withDb(async () => {
+  const note = await musicTools.noteUploadedAudio(fakeMessage(OWNER, { attachments: [] }));
+  assert.equal(note, '');
+}));
+
+test('noteUploadedAudio ignores non-audio attachments', withDb(async () => {
+  const note = await musicTools.noteUploadedAudio(fakeMessage(OWNER, {
+    attachments: [{ name: 'notes.txt', contentType: 'text/plain', size: 10, read: async () => Buffer.from('hi') }],
+  }));
+  assert.equal(note, '');
+}));
+
+test('noteUploadedAudio caches an audio attachment and save_song stores it', withDb(async () => {
+  const message = fakeMessage(OWNER, { attachments: [fakeAttachment({ name: 'my_song.mp3' })] });
+  const note = await musicTools.noteUploadedAudio(message);
+  assert.match(note, /attached audio: my_song\.mp3/);
+  assert.match(note, /save_song/);
+
+  const saved = await musicTools.execute(null, message, 'save_song', { title: 'Uploaded Jam' }, OWNER);
+  assert.match(saved, /Saved "Uploaded Jam" to their library \(1\/10\)/);
+  assert.equal(db.countSongs('1', OWNER), 1);
+  const row = db.getSongData('1', db.findSong('1', 'Uploaded Jam', [OWNER]).id);
+  assert.equal(row.data.toString(), 'AUDIOBYT');
+  assert.equal(row.mediaType, 'audio/mpeg');
+}));
+
+test('an uploaded track lists as "uploaded track", not a generated clip', withDb(async () => {
+  const message = fakeMessage(OWNER, { attachments: [fakeAttachment()] });
+  await musicTools.noteUploadedAudio(message);
+  await musicTools.execute(null, message, 'save_song', { title: 'Uploaded Jam' }, OWNER);
+  const result = await musicTools.execute(null, fakeMessage(OWNER), 'list_songs', {}, OWNER);
+  assert.match(result, /Uploaded Jam \(uploaded track, your library\)/);
+}));
+
+test('noteUploadedAudio refuses an attachment over the size cap without downloading it', withDb(async () => {
+  let read = false;
+  const message = fakeMessage(OWNER, {
+    attachments: [{
+      name: 'huge.mp3', contentType: 'audio/mpeg', size: 20 * 1024 * 1024, read: async () => { read = true; return Buffer.alloc(0); },
+    }],
+  });
+  const note = await musicTools.noteUploadedAudio(message);
+  assert.match(note, /too large to save/);
+  assert.equal(read, false);
+  const result = await musicTools.execute(null, message, 'save_song', { title: 'X' }, OWNER);
+  assert.match(result, /no recently generated or uploaded song/);
 }));
 
 // -- list_songs -----------------------------------------------------------

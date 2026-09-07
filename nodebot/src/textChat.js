@@ -216,6 +216,17 @@ export async function handleMessage(client, message) {
   // Music is gated separately and more narrowly (admin/server owner/bot
   // owner only, never open to 'everyone') — see musicTools.allowed.
   const canMakeMusic = await musicTools.allowed(message);
+  // A pasted-in song is handled the same way as a generated one — stashed as
+  // this user's pending clip so save_song/play_song can reach it — but only
+  // for people who actually have music access, same as the tool schemas below.
+  let audioNote = '';
+  if (canMakeMusic) {
+    try {
+      audioNote = await musicTools.noteUploadedAudio(message);
+    } catch (err) {
+      console.warn('[musicTools] uploaded-audio note failed:', err?.message || err);
+    }
+  }
   const systemPrompt = buildSystemPrompt({
     client, guild: message.guild, owner, memory: memoryBlock, media: canGenerate, music: canMakeMusic,
   });
@@ -243,7 +254,8 @@ export async function handleMessage(client, message) {
   const userText = `${message.author.username}: ${content || '(no text)'}`
     + (attachmentContext ? `\n\n${attachmentContext}` : '')
     + (repoContext ? `\n\n${repoContext}` : '')
-    + (imageNotes.length ? `\n\n${imageNotes.join('\n')}` : '');
+    + (imageNotes.length ? `\n\n${imageNotes.join('\n')}` : '')
+    + (audioNote ? `\n\n${audioNote}` : '');
   try {
     const reply = await chat([
       { role: 'system', content: `${systemPrompt}\n\nRecent conversation:\n${transcript}` },
