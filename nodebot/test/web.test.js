@@ -484,6 +484,34 @@ test('all four phrase lists save from the dashboard', () => withServer(async (ca
   assert.deepEqual(s.voice_stop_listening_words, ['max stop listening']);
 }));
 
+test('a blank phrase-list field clears a saved override instead of storing an empty list', () => withServer(async (call) => {
+  await call('PUT', '/api/guilds/111/settings', {
+    cookie: authCookie(),
+    body: { voice_wake_words: '[hey max]' },
+  });
+  let settings = await (await call('GET', '/api/guilds/111/settings', { cookie: authCookie() })).json();
+  assert.deepEqual(settings.voice_wake_words, ['hey max']);
+
+  await call('PUT', '/api/guilds/111/settings', {
+    cookie: authCookie(),
+    body: { voice_wake_words: '   ' },
+  });
+  settings = await (await call('GET', '/api/guilds/111/settings', { cookie: authCookie() })).json();
+  // Back to the shipped {ai}-templated default, not an empty (silenced) list.
+  assert.equal(settings.voice_wake_words.length > 0, true);
+  assert.ok(settings.voice_wake_words.some((p) => p.includes('{ai}')));
+}));
+
+test('an explicit empty array for a phrase list is still honored as deliberately empty', () => withServer(async (call) => {
+  const res = await call('PUT', '/api/guilds/111/settings', {
+    cookie: authCookie(),
+    body: { voice_wake_words: [] },
+  });
+  assert.equal(res.status, 200);
+  const settings = await (await call('GET', '/api/guilds/111/settings', { cookie: authCookie() })).json();
+  assert.deepEqual(settings.voice_wake_words, []);
+}));
+
 test('a non-phrase setting is not mangled by the phrase parser', () => withServer(async (call) => {
   await call('PUT', '/api/guilds/111/settings', {
     cookie: authCookie(),

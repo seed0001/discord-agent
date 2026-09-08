@@ -442,11 +442,21 @@ function buildRoutes(client) {
           db.setSetting(g.id, key, text || null);
           continue;
         }
-        // Phrase lists arrive from the dashboard as raw bracket text
-        // ("[hey max] [hey andrew]") and from the API as an array. Both are
-        // parsed to a clean, normalized array before storage, so what is
-        // saved is exactly what the matcher will compare against.
-        db.setSetting(g.id, key, PHRASE_LIST_KEYS.has(key) ? parsePhraseList(value) : value);
+        if (PHRASE_LIST_KEYS.has(key)) {
+          // Blank BRACKET TEXT specifically means "stop overriding, go back to
+          // deriving from the bot's current name" — the dashboard's plain text
+          // field has no other way to say "I didn't mean to touch this," same
+          // "blank is meaningful" shape as OPTIONAL_STRING_SETTINGS above. An
+          // explicit empty ARRAY (API callers only) still means "no phrases
+          // here, on purpose" — see voicePhrases()'s own comment on that.
+          if (typeof value === 'string' && !value.trim()) {
+            db.deleteSetting(g.id, key);
+          } else {
+            db.setSetting(g.id, key, parsePhraseList(value));
+          }
+          continue;
+        }
+        db.setSetting(g.id, key, value);
       }
       return { ok: true };
     }, { level: 'admin' }],

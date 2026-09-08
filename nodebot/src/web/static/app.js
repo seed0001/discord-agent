@@ -1069,7 +1069,9 @@ async function renderSettings() {
               <input id="s-voice_leave_words" value="${esc(brackets(settings.voice_leave_words))}"
                 placeholder="[{ai} go to sleep] [{ai} leave the call]"></label>
             <span class="muted">Put each phrase in its own [brackets]. Use <code>{ai}</code> as a
-              placeholder for the bot's name so wake words follow renames.
+              placeholder for the bot's name so wake words follow renames. Leave a field
+              completely blank and save to clear any custom list and go back to deriving it
+              from the bot's current name automatically.
               Say a wake word to pull the bot into the conversation; a cancel word right
               after calls it off before he answers. <strong>Leave voice</strong> is stronger than
               stop&nbsp;listening — the bot disconnects and won't auto-rejoin until someone asks it

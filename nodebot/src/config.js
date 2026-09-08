@@ -86,7 +86,7 @@ export const EDGE_TTS_VOICE = process.env.EDGE_TTS_VOICE || 'en-US-GuyNeural';
 // original comma-separated list. Brackets are the one to reach for when a
 // phrase needs a comma in it.
 export const VOICE_WAKE_WORDS = parsePhraseList(
-  process.env.VOICE_WAKE_WORDS || 'hey max,hey andrew',
+  process.env.VOICE_WAKE_WORDS || 'hey {ai},{ai} are you there',
 );
 export const VOICE_CANCEL_WORDS = parsePhraseList(
   process.env.VOICE_CANCEL_WORDS
@@ -103,13 +103,13 @@ export const VOICE_CANCEL_WORDS = parsePhraseList(
 // matching is substring-based and a bare "stop" would fire inside "stopping".
 export const VOICE_STOP_SPEAKING_WORDS = parsePhraseList(
   process.env.VOICE_STOP_SPEAKING_WORDS
-  || 'max stop speaking,max stop talking,stop speaking max,stop talking max,'
-  + 'max be quiet,max shut up,max quiet down',
+  || '{ai} stop speaking,{ai} stop talking,stop speaking {ai},stop talking {ai},'
+  + '{ai} be quiet,{ai} shut up,{ai} quiet down',
 );
 export const VOICE_STOP_LISTENING_WORDS = parsePhraseList(
   process.env.VOICE_STOP_LISTENING_WORDS
-  || 'max stop listening,stop listening max,max we are done,'
-  + 'max that is all,thanks max that is all',
+  || '{ai} stop listening,stop listening {ai},{ai} we are done,'
+  + '{ai} that is all,thanks {ai} that is all',
 );
 
 // "Leave voice entirely", as opposed to "stop listening" (which only ends the
@@ -120,8 +120,8 @@ export const VOICE_STOP_LISTENING_WORDS = parsePhraseList(
 // Name-prefixed by default so an offhand "I'm going to sleep" can't eject it.
 export const VOICE_LEAVE_WORDS = parsePhraseList(
   process.env.VOICE_LEAVE_WORDS
-  || 'max go to sleep,go to sleep max,max leave voice,max leave the voice channel,'
-  + 'max leave the call,max you can go now,max drop from voice',
+  || '{ai} go to sleep,go to sleep {ai},{ai} leave voice,{ai} leave the voice channel,'
+  + '{ai} leave the call,{ai} you can go now,{ai} drop from voice',
 );
 
 // Which of the phrase lists above were actually pinned in the environment.

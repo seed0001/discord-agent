@@ -526,6 +526,14 @@ export function setSetting(guildId, key, value) {
   ).run(String(guildId), key, JSON.stringify(value));
 }
 
+/** Un-save a setting so hasSetting goes back to false and getSetting falls
+ *  through to DEFAULTS again — for fields whose default is actually derived
+ *  (voice phrase lists off the bot's name; see botName.js voicePhrases),
+ *  where a saved empty value and "never customized" are different things. */
+export function deleteSetting(guildId, key) {
+  db.prepare('DELETE FROM guild_settings WHERE guild_id = ? AND key = ?').run(String(guildId), key);
+}
+
 // -- AI memory ------------------------------------------------------------
 
 /** @returns {{content: string, version: number}} */

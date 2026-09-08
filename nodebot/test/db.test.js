@@ -32,6 +32,19 @@ test('set/get round-trips a JSON-encoded value', withDb(() => {
   assert.deepEqual(db.getSetting('1', 'voice_wake_words'), ['hey max', 'hey andrew']);
 }));
 
+test('deleteSetting un-saves a key so it falls back to DEFAULTS again', withDb(() => {
+  db.setSetting('1', 'voice_wake_words', ['yo robot']);
+  assert.equal(db.hasSetting('1', 'voice_wake_words'), true);
+  db.deleteSetting('1', 'voice_wake_words');
+  assert.equal(db.hasSetting('1', 'voice_wake_words'), false);
+  assert.deepEqual(db.getSetting('1', 'voice_wake_words'), db.DEFAULTS.voice_wake_words);
+}));
+
+test('deleteSetting on a key that was never saved is a no-op', withDb(() => {
+  db.deleteSetting('1', 'voice_wake_words');
+  assert.equal(db.hasSetting('1', 'voice_wake_words'), false);
+}));
+
 test('setSetting overwrites on conflict', withDb(() => {
   db.setSetting('1', 'ai_model', 'model-a');
   db.setSetting('1', 'ai_model', 'model-b');

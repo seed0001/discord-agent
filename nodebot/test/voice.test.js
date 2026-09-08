@@ -5,10 +5,19 @@ import {
   isFollowUpOpen, openFollowUp, closeFollowUp, _resetForTests,
   ENGAGED_STOP_SPEAKING_WORDS, ENGAGED_STOP_LISTENING_WORDS, ENGAGED_LEAVE_WORDS,
 } from '../src/voice.js';
-import { normalizePhrase } from '../src/phrases.js';
+import { normalizePhrase, expandPhraseTemplates } from '../src/phrases.js';
 import {
-  VOICE_STOP_SPEAKING_WORDS, VOICE_STOP_LISTENING_WORDS, VOICE_LEAVE_WORDS,
+  VOICE_STOP_SPEAKING_WORDS as RAW_STOP_SPEAKING,
+  VOICE_STOP_LISTENING_WORDS as RAW_STOP_LISTENING,
+  VOICE_LEAVE_WORDS as RAW_LEAVE,
 } from '../src/config.js';
+
+// The shipped defaults are {ai} templates now (see botName.js), so tests
+// against fixed "max" phrasing expand them the same way voicePhrases() does
+// at runtime — production code never touches these raw, unexpanded lists.
+const VOICE_STOP_SPEAKING_WORDS = expandPhraseTemplates(RAW_STOP_SPEAKING, 'max');
+const VOICE_STOP_LISTENING_WORDS = expandPhraseTemplates(RAW_STOP_LISTENING, 'max');
+const VOICE_LEAVE_WORDS = expandPhraseTemplates(RAW_LEAVE, 'max');
 
 function toolCall(name, args) {
   return { function: { name, arguments: JSON.stringify(args) } };
