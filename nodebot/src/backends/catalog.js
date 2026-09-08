@@ -56,12 +56,18 @@ export function canChat(entry) {
   const inputs = arch.input_modalities;
   const outputs = arch.output_modalities;
   if (Array.isArray(inputs) && Array.isArray(outputs)) {
-    return inputs.includes('text') && outputs.includes('text');
+    // Output must be TEXT ONLY. A model that also lists 'audio' or 'image'
+    // among its outputs — Lyria, an image generator — answers a chat
+    // completions request in its own way, not in prose, and is unusable for
+    // background text work even though 'text' is technically one of the
+    // modalities it claims. This is the bug that let a music generator get
+    // picked as the background model in the first place (see evictUnusable).
+    return inputs.includes('text') && outputs.length > 0 && outputs.every((m) => m === 'text');
   }
   const modality = String(arch.modality || '');
   if (!modality.includes('->')) return false; // unknown shape — do not guess
   const [from, to] = modality.split('->');
-  return from.includes('text') && to.includes('text');
+  return from.includes('text') && to.trim() === 'text';
 }
 
 export function distil(entry) {
@@ -244,7 +250,13 @@ export function startRefreshing({ intervalMs = REFRESH_INTERVAL_MS, afterRefresh
       }
     }
   };
-  if (isEmpty()) run();
+  // Always once on boot, not just when the cache is empty: a fix to what
+  // counts as "can hold a text conversation" (canChat) only takes effect
+  // against freshly re-classified data, and a bad model stuck as the
+  // background one from before that fix stays stuck for up to intervalMs
+  // otherwise — see evictUnusable, which this feeds. Cheap and unauthenticated
+  // either way, so there's no real cost to not waiting for staleness.
+  run();
   timer = setInterval(run, intervalMs);
   timer.unref?.(); // never hold the process open for a catalog refresh
   return timer;

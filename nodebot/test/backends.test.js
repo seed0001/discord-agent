@@ -120,6 +120,26 @@ test('a model that cannot answer in text is not a chat model', () => {
   assert.equal(catalog.canChat(entry('a/b', { inputs: ['image'], outputs: ['image'] })), false);
 });
 
+test('a model that lists text alongside audio/image output is still not a chat model', () => {
+  // The actual shape of the live bug: OpenRouter lists 'text' as ONE of
+  // Lyria's output modalities (alongside 'audio'), not instead of it, so
+  // outputs.includes('text') alone let it straight through — it got picked
+  // as the background model, then answered every call with 400s and
+  // unparseable replies instead of a clean, retryable rejection.
+  const musicWithText = entry('google/lyria-3-clip-preview', {
+    inputs: ['text'], outputs: ['text', 'audio'],
+  });
+  assert.equal(catalog.canChat(musicWithText), false);
+  assert.equal(catalog.distil(musicWithText).canChat, false);
+
+  const imageWithText = entry('a/b', { outputs: ['text', 'image'] });
+  assert.equal(catalog.canChat(imageWithText), false);
+
+  // The legacy string form has the same failure mode: "text->text+audio".
+  const legacyMusic = entry('a/b', { architecture: { modality: 'text->text+audio' } });
+  assert.equal(catalog.canChat(legacyMusic), false);
+});
+
 test('the older modality string is read when the arrays are missing', () => {
   const legacy = (modality) => entry('a/b', { architecture: { modality } });
   assert.equal(catalog.canChat(legacy('text->text')), true);
@@ -143,6 +163,30 @@ test('non-chat models never reach the usable list', withDb(async () => {
   // The cache still holds them — the filter is at read time, so a fix to the
   // rule takes effect without waiting an hour for the next refresh.
   assert.equal(catalog.list({ usable: false }).length, 3);
+}));
+
+test('startRefreshing refreshes immediately on boot even when the catalog is already populated', withDb(async () => {
+  // A canChat() fix only takes effect against freshly re-classified rows —
+  // the stored can_chat column doesn't retroactively update itself — so a
+  // stale bad classification (see the Lyria tests above) stays stuck until
+  // the next real refresh. Gating the boot refresh on "cache is empty" meant
+  // waiting up to an hour after every redeploy; it must run every time.
+  await catalog.refresh({ fetchImpl: fakeFetch([entry('old/model')]) });
+  assert.equal(catalog.isEmpty(), false);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fakeFetch([entry('new/model')]);
+  try {
+    catalog.startRefreshing({ intervalMs: 3600_000 });
+    for (let i = 0; i < 50 && catalog.list().map((m) => m.id).join() !== 'new/model'; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => { setTimeout(r, 10); });
+    }
+    assert.deepEqual(catalog.list().map((m) => m.id), ['new/model']);
+  } finally {
+    catalog.stopRefreshing();
+    globalThis.fetch = originalFetch;
+  }
 }));
 
 test('a context window too small to do the work is not offered', withDb(async () => {
