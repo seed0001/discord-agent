@@ -252,6 +252,24 @@ export async function voiceMusicContext(message) {
     + `${lines.join('\n- ')}`;
 }
 
+/** A per-turn nudge when this speaker has an unsaved generated/uploaded clip
+ *  waiting — play_song and save_song both reach for it when no song is named,
+ *  but nothing else in the prompt says so. Without this, "play it" right
+ *  after generate_music has nothing to anchor to except whatever titles
+ *  list_songs or voiceMusicContext show — which are the SAVED library only,
+ *  so a fresh, not-yet-saved take is invisible next to an old saved upload
+ *  and the model reaches for the wrong one. '' when nothing is pending. */
+export function pendingSongNote(message) {
+  const pending = pendingSong(message.guild.id, message.author.id);
+  if (!pending) return '';
+  const what = pending.kind === 'upload'
+    ? `an audio file they just uploaded (${pending.filename})`
+    : 'a track just generated for them';
+  return `\nThey have ${what}, not yet saved to any library. play_song or save_song with no `
+    + 'song named reaches for THAT — not something already in a saved library, however recently '
+    + 'it was played or mentioned.';
+}
+
 function ownerLabel(message, ownerId, uid) {
   if (ownerId === null || ownerId === undefined) return 'server library';
   if (String(ownerId) === String(uid)) return 'your library';

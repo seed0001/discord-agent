@@ -705,6 +705,10 @@ async function respond(channel, speakerName, speakerId, state, { followUp = fals
     } catch (err) {
       console.warn('[voice] music context failed:', err?.message || err);
     }
+    // Separate from the library snapshot above: a pending, not-yet-saved
+    // clip doesn't show up in any library listing, so without this "play
+    // it" right after generating loses to whatever IS saved and listed.
+    systemPrompt += musicTools.pendingSongNote(fakeMessage);
   }
   const transcript = formatForPrompt(guild.id, CONTEXT_TURNS);
 

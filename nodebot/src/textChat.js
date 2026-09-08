@@ -227,9 +227,13 @@ export async function handleMessage(client, message) {
       console.warn('[musicTools] uploaded-audio note failed:', err?.message || err);
     }
   }
-  const systemPrompt = buildSystemPrompt({
+  let systemPrompt = buildSystemPrompt({
     client, guild: message.guild, owner, memory: memoryBlock, media: canGenerate, music: canMakeMusic,
   });
+  // Per-turn, not part of MUSIC_NOTE (a static persona note): whether THIS
+  // speaker has a pending generated/uploaded track right now — see
+  // pendingSongNote for why this needs to be said explicitly every turn.
+  if (canMakeMusic) systemPrompt += musicTools.pendingSongNote(message);
   const model = modelForTurn(guildId, imageParts.length > 0);
   const baseTools = [
     ...TOOL_SCHEMAS, ...KB_TOOL_SCHEMAS, memory.RECALL_TOOL_SCHEMA,

@@ -834,6 +834,45 @@ test('generate_music_video honors the same hourly video cap as generate_video', 
   assert.match(result, /cap/);
 }));
 
+// -- pendingSongNote ----------------------------------------------------------
+//
+// The bug this exists to prevent: after generate_music, "play it" has nothing
+// telling the model a fresh, unsaved track exists — list_songs and
+// voiceMusicContext only ever show the SAVED library, so an old saved upload
+// looks like "the" song and wins over a brand new generation nobody saved yet.
+
+test('pendingSongNote is empty with nothing pending', withDb(async () => {
+  assert.equal(musicTools.pendingSongNote(fakeMessage(OWNER)), '');
+}));
+
+test('pendingSongNote flags a just-generated, not-yet-saved track', withDb(async () => {
+  const message = fakeMessage(OWNER);
+  await generate(message);
+  const note = musicTools.pendingSongNote(message);
+  assert.match(note, /just generated for them, not yet saved/);
+  assert.match(note, /play_song or save_song with no song named reaches for THAT/);
+}));
+
+test('pendingSongNote flags a just-uploaded, not-yet-saved track', withDb(async () => {
+  const message = fakeMessage(OWNER, { attachments: [fakeAttachment({ name: 'take.mp3' })] });
+  await musicTools.noteUploadedAudio(message);
+  const note = musicTools.pendingSongNote(message);
+  assert.match(note, /uploaded \(take\.mp3\)/);
+}));
+
+test('pendingSongNote goes quiet once the pending clip is saved', withDb(async () => {
+  const message = fakeMessage(OWNER);
+  await generate(message);
+  await musicTools.execute(null, message, 'save_song', { title: 'Keeper' }, OWNER);
+  assert.equal(musicTools.pendingSongNote(message), '');
+}));
+
+test('pendingSongNote is per (guild, user) — someone else\'s pending clip is invisible', withDb(async () => {
+  const mine = fakeMessage('m1');
+  await generate(mine);
+  assert.equal(musicTools.pendingSongNote(fakeMessage('m2')), '');
+}));
+
 test('the status notice is posted, then cleaned up, when the music video script fails', withDb(async () => {
   db.setSetting('1', 'media_enabled', true);
   db.setSetting('1', 'media_access', 'everyone');
