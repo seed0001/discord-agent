@@ -655,6 +655,51 @@ test('play_song will not reach a non-present member\'s library', withDb(async ()
   }
 }));
 
+test('play_song with a name matching nothing saved falls back to the pending clip', withDb(async () => {
+  // The real-world case: a freshly generated take gets called by whatever
+  // name comes up out loud ("play Rise Up"), but nobody has saved it under
+  // that title yet — it should still play, not demand a save first.
+  const voice = fakeVoice();
+  musicTools._setVoiceModuleForTests(voice);
+  try {
+    const message = fakeMessage(OWNER);
+    await generate(message, 'FRESHBYTES');
+    const result = await musicTools.execute(null, message, 'play_song', { song: 'Rise Up' }, OWNER);
+    assert.match(result, /Now playing/);
+    assert.equal(voice.played[0][0].data.toString(), 'FRESHBYTES');
+  } finally {
+    musicTools._setVoiceModuleForTests(null);
+  }
+}));
+
+test('play_song with an unmatched name and no pending clip still errors plainly', withDb(async () => {
+  musicTools._setVoiceModuleForTests(fakeVoice());
+  try {
+    const result = await musicTools.execute(null, fakeMessage(OWNER), 'play_song', { song: 'Nothing Like This' }, OWNER);
+    assert.match(result, /^Error:/);
+    assert.match(result, /no single song matches/);
+  } finally {
+    musicTools._setVoiceModuleForTests(null);
+  }
+}));
+
+test('play_song by a real saved title still wins over a pending clip with a different name', withDb(async () => {
+  // A pending clip existing must not make an actually-matched title fall
+  // through to it — the pending fallback is only for names matching nothing.
+  seedSong('1', 'Chill Vibes', { ownerId: OWNER, bytes: 'SAVEDBYTES' });
+  const voice = fakeVoice();
+  musicTools._setVoiceModuleForTests(voice);
+  try {
+    const message = fakeMessage(OWNER);
+    await generate(message, 'FRESHBYTES');
+    const result = await musicTools.execute(null, message, 'play_song', { song: 'Chill Vibes' }, OWNER);
+    assert.match(result, /Now playing "Chill Vibes"/);
+    assert.equal(voice.played[0][0].data.toString(), 'SAVEDBYTES');
+  } finally {
+    musicTools._setVoiceModuleForTests(null);
+  }
+}));
+
 test('play_song reports plainly when the bot is not connected to voice', withDb(async () => {
   seedSong('1', 'Chill Vibes', { ownerId: OWNER });
   musicTools._setVoiceModuleForTests(fakeVoice({ connected: false }));

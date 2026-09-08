@@ -430,11 +430,21 @@ async function playSongHandler(client, message, args) {
     song = { title: 'the song I just made', data: pending.data, mediaType: pending.mediaType };
   } else {
     const row = db.findSong(message.guild.id, query, await playableScope(message));
-    if (!row) {
-      throw new ToolError(`no single song matches "${query}" in their library, the server library, or the `
-        + 'shared libraries of people here — use list_songs to see the exact titles.');
+    if (row) {
+      song = db.getSongData(message.guild.id, row.id);
+    } else {
+      // Nothing saved matches — but a fresh, unsaved take gets called by
+      // whatever name came up in conversation, and that name was never
+      // saved anywhere to search against. Asking to play something right
+      // after making it means THAT take, saved or not, so fall back to the
+      // pending clip before refusing outright.
+      const pending = pendingSong(message.guild.id, message.author.id);
+      if (!pending) {
+        throw new ToolError(`no single song matches "${query}" in their library, the server library, or `
+          + 'the shared libraries of people here — use list_songs to see the exact titles.');
+      }
+      song = { title: 'the song I just made', data: pending.data, mediaType: pending.mediaType };
     }
-    song = db.getSongData(message.guild.id, row.id);
   }
   const voice = await getVoice();
   const started = await voice.playInVoice(message.guild, [song]);
