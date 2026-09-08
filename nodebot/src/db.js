@@ -342,6 +342,15 @@ export const DEFAULTS = {
   // Spend breaker for the expensive half: videos per guild per hour, 0 to
   // disable the cap entirely. Images are cheap enough to leave uncapped.
   media_video_hourly_cap: 5,
+  // Off by default on purpose: turning a video's still scenes into a few
+  // seconds of silent motion each (via videoAnimate.js) costs meaningfully
+  // more per scene than a still image, on top of whatever the video already
+  // costs — a guild has to opt into that, same reasoning as media_access
+  // starting at 'owner'. media_video_animation_model is the per-guild model
+  // pin, same "null follows OPENROUTER_VIDEO_ANIMATION_MODEL" shape as
+  // media_image_model above.
+  media_video_animate: false,
+  media_video_animation_model: null,
   // What each model was before the last backend switch, so "switch back"
   // works after she has rerouted around a rate-limited provider. Persisted
   // rather than held in memory so a redeploy mid-incident doesn't strand a

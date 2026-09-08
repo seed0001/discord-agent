@@ -38,6 +38,14 @@ export const OPENROUTER_BG_HOURLY_CAP = parseInt(process.env.OPENROUTER_BG_HOURL
 // a guild that hasn't picks up whatever is set here — so changing the env
 // var moves every unpinned guild at once.
 export const OPENROUTER_IMAGE_MODEL = process.env.OPENROUTER_IMAGE_MODEL || 'google/gemini-2.5-flash-image';
+// Image-to-video animation model, for turning a video's still scenes into
+// short silent clips (see videoAnimate.js). Off by default per guild — see
+// media_video_animate in db.js DEFAULTS — this is only the model used once a
+// guild opts in; same "env default, per-guild pin overrides" shape as
+// OPENROUTER_IMAGE_MODEL above. Kling's no-audio SKU: solid motion quality
+// per dollar without paying for audio generation this pipeline discards
+// anyway (narration/song audio is muxed in separately).
+export const OPENROUTER_VIDEO_ANIMATION_MODEL = process.env.OPENROUTER_VIDEO_ANIMATION_MODEL || 'kwaivgi/kling-v3.0-std';
 
 // YouTube channel caption indexing via the channel-brains sidecar
 // (channelBrains.js). Opt-in: unset leaves the feature off and the model

@@ -977,6 +977,18 @@ async function renderSettings() {
               plus assembly, all in one request, so it costs meaningfully more and takes a few
               minutes; the hourly cap is the safety net. Opening either to
               <strong>everyone</strong> hands the whole server a button that spends real money.</span>
+            <label class="toggle"><input type="checkbox" id="s-media_video_animate"
+              ${settings.media_video_animate ? "checked" : ""}> Animate video scenes (moving instead of
+              still)</label>
+            <label class="field"><span class="lbl">Animation model</span>
+              <input id="s-media_video_animation_model" value="${esc(settings.media_video_animation_model || "")}"
+                placeholder="kwaivgi/kling-v3.0-std"></label>
+            <span class="muted">Off by default. When on, each scene in generate_video and
+              generate_music_video is a few seconds of silent motion (looped to fill the
+              narration or song) instead of a static picture — a meaningfully bigger cost per
+              video on top of the illustrations and narration above, since animating a scene
+              costs several times what drawing it does. Leave the model blank to use this
+              instance's default.</span>
           </div>
 
           <div class="section-title">Music</div>
@@ -1224,6 +1236,8 @@ async function renderSettings() {
       media_image_model: $("#s-media_image_model").value.trim(),
       media_vision_model: $("#s-media_vision_model").value.trim(),
       media_video_hourly_cap: parseInt($("#s-media_video_hourly_cap").value, 10) || 0,
+      media_video_animate: $("#s-media_video_animate").checked,
+      media_video_animation_model: $("#s-media_video_animation_model").value.trim(),
       music_roles: [...$("#s-music_roles").selectedOptions].map((o) => o.value),
       music_curator_roles: [...$("#s-music_curator_roles").selectedOptions].map((o) => o.value),
       pressure_enabled: $("#s-pressure_enabled").checked,

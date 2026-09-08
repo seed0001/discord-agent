@@ -14,9 +14,10 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { OPENROUTER_API_KEY, OPENROUTER_MODEL } from './config.js';
+import { OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_VIDEO_ANIMATION_MODEL } from './config.js';
 import * as media from './media.js';
 import * as tts from './tts.js';
+import * as videoAnimate from './videoAnimate.js';
 
 export class VideoMakerError extends Error {}
 
@@ -31,8 +32,24 @@ const IMAGE_CONCURRENCY = 3;
 const NARRATION_CONCURRENCY = 3;
 const RESOLUTION = { width: 1024, height: 576 }; // 16:9
 
-// Stage weights for the overall progress figure reported to onStatus.
-const STAGE_WEIGHTS = [['script', 0.05], ['images', 0.45], ['narration', 0.25], ['assemble', 0.25]];
+// Animation (opt-in — see media_video_animate in db.js DEFAULTS) turns each
+// still into a few seconds of silent motion via videoAnimate.js. Kept to a
+// lower concurrency than images: each call is a real async job on the
+// provider's side (submit + poll until done), not a single request/response,
+// so fewer in flight at once is kinder to how long the whole video takes.
+// The duration is a flat request, not matched to that scene's actual
+// narration/song-slice length — assembleVideo loops the clip to fill
+// whatever the audio runs, same as it already loops a static image today.
+const ANIMATE_CONCURRENCY = 2;
+const ANIMATE_DURATION_SEC = 8;
+
+// Stage weights for the overall progress figure reported to onStatus. Two
+// tables per pipeline: animation adds a real, slow stage, so the weighting
+// only applies when a guild has actually opted into it (media_video_animate).
+const STAGE_WEIGHTS_STATIC = [['script', 0.05], ['images', 0.45], ['narration', 0.25], ['assemble', 0.25]];
+const STAGE_WEIGHTS_ANIMATED = [
+  ['script', 0.05], ['images', 0.25], ['animate', 0.35], ['narration', 0.15], ['assemble', 0.20],
+];
 
 const SYSTEM_PROMPT = `You are a scriptwriter for a narrated video illustrated with still images.
 
@@ -66,7 +83,12 @@ Respond with ONLY valid JSON, no markdown fences, in this exact shape:
 // good enough for a first pass; tighter sync is a later step if it's worth it.
 const MUSIC_VIDEO_MIN_SCENES = 5;
 const MUSIC_VIDEO_MAX_SCENES = 8;
-const MUSIC_VIDEO_STAGE_WEIGHTS = [['script', 0.05], ['images', 0.55], ['slicing', 0.05], ['assemble', 0.35]];
+const MUSIC_VIDEO_STAGE_WEIGHTS_STATIC = [
+  ['script', 0.05], ['images', 0.55], ['slicing', 0.05], ['assemble', 0.35],
+];
+const MUSIC_VIDEO_STAGE_WEIGHTS_ANIMATED = [
+  ['script', 0.05], ['images', 0.30], ['animate', 0.35], ['slicing', 0.05], ['assemble', 0.25],
+];
 
 const MUSIC_VIDEO_SYSTEM_PROMPT = `You are directing a lyric video for a song, illustrated with still \
 images that play in sequence while the song itself plays as the soundtrack — there is no separate \
@@ -192,29 +214,35 @@ async function sliceSong(song, sceneCount, workDir, runFfmpegFn = runFfmpeg, pro
  * @param {string} [opts.notes] extra guidance for the shot list
  * @param {string} [opts.imageModel] per-guild image model override
  * @param {string} [opts.scriptModel] per-guild script model override
+ * @param {boolean} [opts.animate] turn each scene's still into a short silent
+ *   moving clip instead of leaving it static (opt-in — costs meaningfully
+ *   more; see media_video_animate)
+ * @param {string} [opts.animationModel] per-guild animation model override,
+ *   used only when animate is true
  * @param {(info: {stage: string, stageProgress: number, progress: number,
  *   costUsd: number}) => Promise<void>} [opts.onStatus]
  * @param {object} [opts.deps] test-only overrides: { fetchFn, generateImageFn,
- *   runFfmpegFn, probeDurationFn }
+ *   runFfmpegFn, probeDurationFn, animateFn }
  * @returns {Promise<{data: Buffer, contentType: string, title: string,
  *   description: string, sceneCount: number, costUsd: number}>}
  */
 export async function createMusicVideo(song, {
-  notes, imageModel, scriptModel, onStatus, deps = {},
+  notes, imageModel, scriptModel, animate = false, animationModel, onStatus, deps = {},
 } = {}) {
   if (!song?.data?.length) throw new VideoMakerError('a generated song is required');
   if (!String(song.prompt || '').trim()) throw new VideoMakerError("the song's generation prompt is required — only songs Max wrote himself can be turned into a lyric video");
   if (!OPENROUTER_API_KEY) throw new VideoMakerError('OPENROUTER_API_KEY is not set');
 
+  const weights = animate ? MUSIC_VIDEO_STAGE_WEIGHTS_ANIMATED : MUSIC_VIDEO_STAGE_WEIGHTS_STATIC;
   const weightBefore = (stage) => {
     let sum = 0;
-    for (const [name, weight] of MUSIC_VIDEO_STAGE_WEIGHTS) {
+    for (const [name, weight] of weights) {
       if (name === stage) return sum;
       sum += weight;
     }
     return sum;
   };
-  const weightOf = (stage) => MUSIC_VIDEO_STAGE_WEIGHTS.find(([name]) => name === stage)[1];
+  const weightOf = (stage) => weights.find(([name]) => name === stage)[1];
   const report = async (stage, stageProgress, costUsd) => {
     if (!onStatus) return;
     await onStatus({
@@ -239,12 +267,23 @@ export async function createMusicVideo(song, {
     );
     totalCost += imagesCost;
 
+    let visuals = images.map((img) => ({ kind: 'image', data: img.data, mediaType: img.mediaType }));
+    if (animate) {
+      const { clips, costUsd: animateCost } = await animateScenes(images, {
+        model: animationModel || OPENROUTER_VIDEO_ANIMATION_MODEL,
+        onProgress: (p) => report('animate', p, totalCost),
+        animateFn: deps.animateFn,
+      });
+      totalCost += animateCost;
+      visuals = clips;
+    }
+
     await report('slicing', 0, totalCost);
     const songClips = await sliceSong(song, scenes.length, workDir, deps.runFfmpegFn, deps.probeDurationFn);
     await report('slicing', 1, totalCost);
 
     const finalPath = await assembleVideo(
-      images, songClips, workDir, (p) => report('assemble', p, totalCost), deps.runFfmpegFn,
+      visuals, songClips, workDir, (p) => report('assemble', p, totalCost), deps.runFfmpegFn,
     );
 
     const data = await readFile(finalPath);
@@ -344,6 +383,23 @@ async function generateImages(scenes, imageModel, onProgress, generateImageFn = 
   return { images, costUsd };
 }
 
+/** Turns each scene's still into a short silent moving clip. Returns
+ * assembleVideo-ready visuals ({kind: 'video', ...}) in scene order,
+ * regardless of which clip's async job finishes first — same ordering
+ * guarantee mapWithConcurrency already gives generateImages. */
+async function animateScenes(images, { model, onProgress, animateFn = videoAnimate.animateImage }) {
+  let done = 0;
+  let costUsd = 0;
+  const clips = await mapWithConcurrency(images, ANIMATE_CONCURRENCY, async (image) => {
+    const clip = await animateFn(image.data, image.mediaType, { model, durationSec: ANIMATE_DURATION_SEC });
+    costUsd += clip.costUsd || 0;
+    done += 1;
+    onProgress?.(done / images.length);
+    return { kind: 'video', data: clip.data, mediaType: clip.mediaType };
+  });
+  return { clips, costUsd };
+}
+
 async function generateNarration(scenes, guildId, onProgress, synthesizeFn = tts.synthesize) {
   let done = 0;
   return mapWithConcurrency(scenes, NARRATION_CONCURRENCY, async (scene) => {
@@ -373,7 +429,21 @@ function runFfmpeg(args) {
   });
 }
 
-async function assembleVideo(images, audios, workDir, onProgress, runFfmpegFn = runFfmpeg) {
+/** A still loops for the whole scene; a moving clip loops too, since every
+ * clip (a flat ANIMATE_DURATION_SEC request) is typically shorter than the
+ * scene's narration/song-slice — -shortest below cuts either back down to
+ * the audio's actual length, so looping past it is harmless either way. */
+function visualExtension(visual) {
+  return visual.kind === 'video' ? 'mp4' : extensionFor(visual.mediaType);
+}
+
+function visualInputArgs(visualPath, visual) {
+  return visual.kind === 'video'
+    ? ['-stream_loop', '-1', '-i', visualPath]
+    : ['-loop', '1', '-i', visualPath];
+}
+
+async function assembleVideo(visuals, audios, workDir, onProgress, runFfmpegFn = runFfmpeg) {
   const segDir = path.join(workDir, 'segments');
   await mkdir(segDir, { recursive: true });
   const { width, height } = RESOLUTION;
@@ -381,24 +451,25 @@ async function assembleVideo(images, audios, workDir, onProgress, runFfmpegFn = 
     + `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`;
 
   const segments = [];
-  for (let i = 0; i < images.length; i += 1) {
-    const imgPath = path.join(workDir, `scene_${i + 1}.${extensionFor(images[i].mediaType)}`);
+  for (let i = 0; i < visuals.length; i += 1) {
+    const visual = visuals[i];
+    const visPath = path.join(workDir, `scene_${i + 1}.${visualExtension(visual)}`);
     const audPath = path.join(workDir, `scene_${i + 1}.mp3`);
     // eslint-disable-next-line no-await-in-loop
-    await writeFile(imgPath, images[i].data);
+    await writeFile(visPath, visual.data);
     // eslint-disable-next-line no-await-in-loop
     await writeFile(audPath, audios[i]);
     const segPath = path.join(segDir, `seg_${i + 1}.mp4`);
     // eslint-disable-next-line no-await-in-loop
     await runFfmpegFn([
-      '-y', '-loop', '1', '-i', imgPath, '-i', audPath,
-      '-vf', scale, '-c:v', 'libx264', '-tune', 'stillimage', '-preset', 'medium',
+      '-y', ...visualInputArgs(visPath, visual), '-i', audPath,
+      '-vf', scale, '-c:v', 'libx264', '-tune', visual.kind === 'video' ? 'film' : 'stillimage', '-preset', 'medium',
       '-r', '30', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '192k', '-ar', '44100',
       '-shortest', segPath,
     ]);
     segments.push(segPath);
-    onProgress?.((i + 1) / images.length);
+    onProgress?.((i + 1) / visuals.length);
   }
 
   const concatList = path.join(workDir, 'concat.txt');
@@ -422,29 +493,35 @@ async function assembleVideo(images, audios, workDir, onProgress, runFfmpegFn = 
  * @param {string} [opts.notes] extra guidance for the script
  * @param {string} [opts.imageModel] per-guild image model override
  * @param {string} [opts.scriptModel] per-guild script model override
+ * @param {boolean} [opts.animate] turn each scene's still into a short silent
+ *   moving clip instead of leaving it static (opt-in — costs meaningfully
+ *   more; see media_video_animate)
+ * @param {string} [opts.animationModel] per-guild animation model override,
+ *   used only when animate is true
  * @param {(info: {stage: string, stageProgress: number, progress: number,
  *   costUsd: number}) => Promise<void>} [opts.onStatus] awaited on every
  *   stage transition and scene completion
  * @param {object} [opts.deps] test-only overrides — real call sites never
- *   pass this. { fetchFn, generateImageFn, synthesizeFn, runFfmpegFn }
+ *   pass this. { fetchFn, generateImageFn, synthesizeFn, runFfmpegFn, animateFn }
  * @returns {Promise<{data: Buffer, contentType: string, title: string,
  *   description: string, sceneCount: number, costUsd: number}>}
  */
 export async function createVideo(topic, {
-  guildId, notes, imageModel, scriptModel, onStatus, deps = {},
+  guildId, notes, imageModel, scriptModel, animate = false, animationModel, onStatus, deps = {},
 } = {}) {
   if (!String(topic || '').trim()) throw new VideoMakerError('a video topic is required');
   if (!OPENROUTER_API_KEY) throw new VideoMakerError('OPENROUTER_API_KEY is not set');
 
+  const weights = animate ? STAGE_WEIGHTS_ANIMATED : STAGE_WEIGHTS_STATIC;
   const weightBefore = (stage) => {
     let sum = 0;
-    for (const [name, weight] of STAGE_WEIGHTS) {
+    for (const [name, weight] of weights) {
       if (name === stage) return sum;
       sum += weight;
     }
     return sum;
   };
-  const weightOf = (stage) => STAGE_WEIGHTS.find(([name]) => name === stage)[1];
+  const weightOf = (stage) => weights.find(([name]) => name === stage)[1];
   const report = async (stage, stageProgress, costUsd) => {
     if (!onStatus) return;
     await onStatus({
@@ -469,12 +546,23 @@ export async function createVideo(topic, {
     );
     totalCost += imagesCost;
 
+    let visuals = images.map((img) => ({ kind: 'image', data: img.data, mediaType: img.mediaType }));
+    if (animate) {
+      const { clips, costUsd: animateCost } = await animateScenes(images, {
+        model: animationModel || OPENROUTER_VIDEO_ANIMATION_MODEL,
+        onProgress: (p) => report('animate', p, totalCost),
+        animateFn: deps.animateFn,
+      });
+      totalCost += animateCost;
+      visuals = clips;
+    }
+
     const audios = await generateNarration(
       scenes, guildId, (p) => report('narration', p, totalCost), deps.synthesizeFn,
     );
 
     const finalPath = await assembleVideo(
-      images, audios, workDir, (p) => report('assemble', p, totalCost), deps.runFfmpegFn,
+      visuals, audios, workDir, (p) => report('assemble', p, totalCost), deps.runFfmpegFn,
     );
 
     const data = await readFile(finalPath);
