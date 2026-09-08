@@ -69,34 +69,17 @@ function fakeFfmpeg() {
   return { fn, calls };
 }
 
-/** Stands in for videoAnimate.animateImage: turns a still into a fake "clip"
- * buffer so assembleVideo's ffmpeg call can be inspected without a real
- * OpenRouter video job or a real ffmpeg binary. */
-function fakeAnimate({ cost = 0.5 } = {}) {
-  const calls = [];
-  const fn = async (data, mediaType, opts) => {
-    calls.push({ data, mediaType, opts });
-    return { data: Buffer.from(`clip:${data.toString()}`), mediaType: 'video/mp4', costUsd: cost };
-  };
-  return { fn, calls };
-}
-
 function baseDeps(overrides = {}) {
   const fetch_ = overrides.fetch ?? fakeFetch();
   const images = overrides.images ?? fakeImages();
   const narration = overrides.narration ?? fakeNarration();
   const ffmpeg = overrides.ffmpeg ?? fakeFfmpeg();
-  const animate = overrides.animate ?? fakeAnimate();
   return {
     deps: {
-      fetchFn: fetch_.fn,
-      generateImageFn: images.fn,
-      synthesizeFn: narration.fn,
-      runFfmpegFn: ffmpeg.fn,
-      animateFn: animate.fn,
+      fetchFn: fetch_.fn, generateImageFn: images.fn, synthesizeFn: narration.fn, runFfmpegFn: ffmpeg.fn,
     },
     calls: {
-      fetch: fetch_.calls, images: images.calls, narration: narration.calls, ffmpeg: ffmpeg.calls, animate: animate.calls,
+      fetch: fetch_.calls, images: images.calls, narration: narration.calls, ffmpeg: ffmpeg.calls,
     },
   };
 }
@@ -272,44 +255,6 @@ test('onStatus reports each stage in order, ending near 100% before the final re
   assert.ok(stages.at(-1).stageProgress >= 0.99);
 });
 
-// -- animate: still scenes -> silent moving clips ----------------------------
-
-test('animate defaults to false: scenes stay static and animateFn is never called', async () => {
-  const { deps, calls } = baseDeps();
-  await createVideo('cats', { deps });
-  assert.equal(calls.animate.length, 0);
-  // every per-scene ffmpeg call loops a still, none loop a video clip
-  const perSceneCalls = calls.ffmpeg.slice(0, -1); // last call is the final concat
-  assert.ok(perSceneCalls.every((args) => args.includes('-loop') && !args.includes('-stream_loop')));
-});
-
-test('animate:true animates every scene and loops the clip instead of a still', async () => {
-  const { deps, calls } = baseDeps({ fetch: fakeFetch(scriptResponse({ scenes: SCENES(3) })) });
-  const clip = await createVideo('cats', { deps, animate: true, animationModel: 'kwaivgi/kling-v3.0-std' });
-
-  assert.equal(calls.animate.length, 3, 'one animation call per scene');
-  assert.ok(calls.animate.every((c) => c.opts.model === 'kwaivgi/kling-v3.0-std'));
-
-  const perSceneCalls = calls.ffmpeg.slice(0, -1);
-  assert.equal(perSceneCalls.length, 3);
-  assert.ok(perSceneCalls.every((args) => args.includes('-stream_loop') && !args.includes('-loop')));
-
-  // 0.01 script + 3 * 0.02 images + 3 * 0.5 animate (fakeAnimate's default cost)
-  assert.ok(Math.abs(clip.costUsd - (0.01 + 0.06 + 1.5)) < 1e-9, `unexpected total cost ${clip.costUsd}`);
-});
-
-test('onStatus includes the animate stage only when animate is on', async () => {
-  const { deps } = baseDeps();
-  const stages = [];
-  await createVideo('cats', { deps, animate: true, onStatus: async (info) => stages.push({ ...info }) });
-  const seen = [...new Set(stages.map((s) => s.stage))];
-  assert.deepEqual(seen, ['script', 'images', 'animate', 'narration', 'assemble']);
-  assert.ok(stages.every((s) => s.progress >= 0 && s.progress <= 1));
-  for (let i = 1; i < stages.length; i += 1) {
-    assert.ok(stages[i].progress >= stages[i - 1].progress, `progress went backwards at index ${i}`);
-  }
-});
-
 // ===========================================================================
 // createMusicVideo
 // ===========================================================================
@@ -353,17 +298,12 @@ function baseMusicVideoDeps(overrides = {}) {
   const images = overrides.images ?? fakeImages();
   const ffmpeg = overrides.ffmpeg ?? fakeFfmpeg();
   const probe = overrides.probe ?? fakeProbe();
-  const animate = overrides.animate ?? fakeAnimate();
   return {
     deps: {
-      fetchFn: fetch_.fn,
-      generateImageFn: images.fn,
-      runFfmpegFn: ffmpeg.fn,
-      probeDurationFn: probe.fn,
-      animateFn: animate.fn,
+      fetchFn: fetch_.fn, generateImageFn: images.fn, runFfmpegFn: ffmpeg.fn, probeDurationFn: probe.fn,
     },
     calls: {
-      fetch: fetch_.calls, images: images.calls, ffmpeg: ffmpeg.calls, probe: probe.calls, animate: animate.calls,
+      fetch: fetch_.calls, images: images.calls, ffmpeg: ffmpeg.calls, probe: probe.calls,
     },
   };
 }
@@ -475,42 +415,4 @@ test('onStatus reports script/images/slicing/assemble in order, ending near 100%
   }
   assert.equal(stages.at(-1).stage, 'assemble');
   assert.ok(stages.at(-1).stageProgress >= 0.99);
-});
-
-// -- animate: still scenes -> silent moving clips ----------------------------
-
-test('animate defaults to false: scenes stay static and animateFn is never called', async () => {
-  const { deps, calls } = baseMusicVideoDeps();
-  await createMusicVideo(testSong(), { deps });
-  assert.equal(calls.animate.length, 0);
-  const perSceneCalls = calls.ffmpeg.filter((args) => !args.includes('-ss')).slice(0, -1);
-  assert.ok(perSceneCalls.every((args) => args.includes('-loop') && !args.includes('-stream_loop')));
-});
-
-test('animate:true animates every scene and loops the clip instead of a still', async () => {
-  const { deps, calls } = baseMusicVideoDeps({ fetch: fakeFetch(musicScriptResponse({ scenes: MV_SCENES(3) })) });
-  await createMusicVideo(testSong(), { deps, animate: true, animationModel: 'kwaivgi/kling-v3.0-std' });
-
-  assert.equal(calls.animate.length, 3, 'one animation call per scene');
-  assert.ok(calls.animate.every((c) => c.opts.model === 'kwaivgi/kling-v3.0-std'));
-
-  // slice cuts (have -ss) are unaffected; the per-scene encodes (no -ss,
-  // excluding the final concat) should now loop a video clip
-  const sliceCalls = calls.ffmpeg.filter((args) => args.includes('-ss'));
-  const perSceneCalls = calls.ffmpeg.filter((args) => !args.includes('-ss')).slice(0, -1);
-  assert.equal(sliceCalls.length, 3);
-  assert.equal(perSceneCalls.length, 3);
-  assert.ok(perSceneCalls.every((args) => args.includes('-stream_loop') && !args.includes('-loop')));
-});
-
-test('onStatus includes the animate stage only when animate is on, for music videos too', async () => {
-  const { deps } = baseMusicVideoDeps();
-  const stages = [];
-  await createMusicVideo(testSong(), { deps, animate: true, onStatus: async (info) => stages.push({ ...info }) });
-  const seen = [...new Set(stages.map((s) => s.stage))];
-  assert.deepEqual(seen, ['script', 'images', 'animate', 'slicing', 'assemble']);
-  assert.ok(stages.every((s) => s.progress >= 0 && s.progress <= 1));
-  for (let i = 1; i < stages.length; i += 1) {
-    assert.ok(stages[i].progress >= stages[i - 1].progress, `progress went backwards at index ${i}`);
-  }
 });

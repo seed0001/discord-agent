@@ -172,12 +172,7 @@ export const MEDIA_NOTE = (
   + 'animation. Otherwise generate_image.\n'
   + '- By the time the tool comes back the file is ALREADY posted. Say '
   + 'something about what you made — do not repeat the prompt back at them, '
-  + 'and do not say it is on the way, because it has already landed.\n'
-  + "- Some servers turn on scene animation (a dashboard setting) — when it's "
-  + 'on, each scene is a few seconds of silent motion instead of a static '
-  + 'picture, looped to fill the narration. You cannot tell in advance '
-  + 'whether a given server has this on; do not promise movement, and do not '
-  + 'apologize if a video comes back as stills — either is normal.'
+  + 'and do not say it is on the way, because it has already landed.'
 );
 
 // Gated on canMusic, same shape as MEDIA_NOTE and for the same reason: this
@@ -240,9 +235,7 @@ export const MUSIC_NOTE = (
   + 'lyric timing, so do not oversell precision you do not have. This also '
   + "needs image/video generation turned on for this server (same requirement "
   + 'generate_video has) on top of music access — if that is off, say so '
-  + 'plainly rather than trying and coming back with an error. Scenes may '
-  + 'also be animated instead of static, same server-level setting as '
-  + 'generate_video — see the note above about not promising it either way.'
+  + 'plainly rather than trying and coming back with an error.'
 );
 
 // Gated on the channel-brains sidecar being configured (channelBrains.js

@@ -456,7 +456,6 @@ async function playPlaylistHandler(client, message, args) {
 const MUSIC_VIDEO_STAGE_LABELS = {
   script: 'Planning the shot list',
   images: 'Illustrating scenes',
-  animate: 'Animating scenes',
   slicing: 'Cutting the song into scenes',
   assemble: 'Rendering the final video',
 };
@@ -522,8 +521,6 @@ async function generateMusicVideoHandler(client, message, args, access, ownerId)
       clip = await videomaker.createMusicVideo(song, {
         notes: args.notes,
         imageModel: db.getSetting(guildId, 'media_image_model') || undefined,
-        animate: Boolean(db.getSetting(guildId, 'media_video_animate')),
-        animationModel: db.getSetting(guildId, 'media_video_animation_model') || undefined,
         onStatus: updateNotice,
       });
     } catch (err) {

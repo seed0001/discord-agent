@@ -168,7 +168,6 @@ async function generateImage(client, message, args) {
 const STAGE_LABELS = {
   script: 'Writing the script',
   images: 'Illustrating scenes',
-  animate: 'Animating scenes',
   narration: 'Recording narration',
   assemble: 'Rendering the final video',
 };
@@ -215,8 +214,6 @@ async function generateVideo(client, message, args) {
         guildId,
         notes: args.notes,
         imageModel: db.getSetting(guildId, 'media_image_model') || undefined,
-        animate: Boolean(db.getSetting(guildId, 'media_video_animate')),
-        animationModel: db.getSetting(guildId, 'media_video_animation_model') || undefined,
         onStatus: updateNotice,
       });
     } catch (err) {
